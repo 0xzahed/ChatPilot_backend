@@ -76,7 +76,7 @@ class FacebookProvider(BaseIntegrationProvider):
                                 attachment_url = att.get("payload", {}).get("url", "")
 
                     messages.append(IncomingMessage(
-                        external_id=messaging_event.get("message_id", ""),
+                        external_id=message.get("mid", messaging_event.get("message_id", "")),
                         channel="facebook",
                         sender_external_id=sender_id,
                         sender_name="",  # Will be fetched via API
@@ -116,7 +116,7 @@ class FacebookProvider(BaseIntegrationProvider):
             f"?client_id={settings.META_APP_ID}"
             f"&redirect_uri={redirect_uri}"
             f"&state={state}"
-            f"&scope=pages_messaging,pages_manage_posts,pages_read_engagement"
+            f"&scope=pages_messaging,pages_read_engagement,pages_show_list,pages_manage_metadata"
         )
 
     def handle_oauth_callback(self, code: str, redirect_uri: str) -> dict:
@@ -135,9 +135,13 @@ class FacebookProvider(BaseIntegrationProvider):
                 data = resp.json()
                 user_token = data["access_token"]
 
-                # Get pages
+                # Get pages — try /me/accounts first (Classic Pages)
                 pages_url = f"{GRAPH_API_BASE}/me/accounts"
-                pages_resp = client.get(pages_url, params={"access_token": user_token})
+                pages_resp = client.get(pages_url, params={
+                    "access_token": user_token,
+                    "fields": "id,name,access_token,tasks",
+                    "limit": 100,
+                })
                 pages_resp.raise_for_status()
                 pages_data = pages_resp.json()
 
@@ -147,11 +151,116 @@ class FacebookProvider(BaseIntegrationProvider):
                         "page_id": page["id"],
                         "page_name": page["name"],
                         "page_access_token": page["access_token"],
+                        "user_access_token": user_token,
                     }
-                return {}
+
+                # New Pages Experience: /me/accounts may return empty,
+                # but granular_scopes in debug_token has target_ids (page IDs).
+                # Use debug_token to find granted page IDs, then fetch page token directly.
+                try:
+                    debug_resp = client.get(
+                        f"{GRAPH_API_BASE}/debug_token",
+                        params={"input_token": user_token, "access_token": user_token},
+                    )
+                    debug_data = debug_resp.json().get("data", {})
+                    granular = debug_data.get("granular_scopes", [])
+                    page_ids = set()
+                    for gs in granular:
+                        for tid in gs.get("target_ids", []):
+                            page_ids.add(tid)
+
+                    for pid in page_ids:
+                        page_resp = client.get(
+                            f"{GRAPH_API_BASE}/{pid}",
+                            params={
+                                "access_token": user_token,
+                                "fields": "id,name,access_token",
+                            },
+                        )
+                        if page_resp.status_code == 200:
+                            pdata = page_resp.json()
+                            if pdata.get("access_token"):
+                                return {
+                                    "page_id": pdata["id"],
+                                    "page_name": pdata.get("name", ""),
+                                    "page_access_token": pdata["access_token"],
+                                    "user_access_token": user_token,
+                                }
+                except Exception as e:
+                    logger.warning(f"Facebook OAuth: granular scope page lookup failed: {e}")
+
+                # Last resort: save user token, let user select page later
+                logger.warning(f"Facebook OAuth: No pages found via /me/accounts. Saving user token.")
+                return {
+                    "user_access_token": user_token,
+                    "page_id": "",
+                    "page_name": "",
+                    "page_access_token": "",
+                }
         except Exception as e:
             logger.error(f"Facebook OAuth error: {e}")
-            return {}
+            raise
+
+    def fetch_historical_conversations(self) -> list[dict]:
+        """Fetch past Messenger conversations from Facebook Page.
+
+        Uses the Page conversations API to retrieve threads and messages.
+        Returns a list of dicts: [{thread_id, sender_id, sender_name, messages: [{...}]}]
+        """
+        token = self.credentials.get("page_access_token") or self.credentials.get("user_access_token")
+        if not token:
+            logger.warning("Facebook: no token available for historical sync")
+            return []
+
+        page_id = self.credentials.get("page_id", "")
+        results = []
+
+        try:
+            with httpx.Client(timeout=60) as client:
+                # Get page conversations (Messenger threads)
+                endpoint = f"{GRAPH_API_BASE}/{page_id}/conversations" if page_id else f"{GRAPH_API_BASE}/me/conversations"
+                resp = client.get(endpoint, params={
+                    "access_token": token,
+                    "fields": "id,link,message_count,snippet,updated_time,participants,messages{message,from,created_time,id}",
+                    "limit": 50,
+                })
+                resp.raise_for_status()
+                data = resp.json()
+
+                for thread in data.get("data", []):
+                    thread_id = thread.get("id", "")
+                    participants = thread.get("participants", {}).get("data", [])
+                    sender = next((p for p in participants if p.get("id") != page_id), participants[0] if participants else {})
+                    sender_id = sender.get("id", "")
+                    sender_name = sender.get("name", "Unknown")
+
+                    messages = []
+                    msg_data = thread.get("messages", {}).get("data", [])
+                    for m in msg_data:
+                        messages.append({
+                            "id": m.get("id", ""),
+                            "content": m.get("message", ""),
+                            "created_time": m.get("created_time", ""),
+                            "from_id": m.get("from", {}).get("id", ""),
+                            "from_name": m.get("from", {}).get("name", ""),
+                        })
+
+                    results.append({
+                        "thread_id": thread_id,
+                        "sender_id": sender_id,
+                        "sender_name": sender_name,
+                        "snippet": thread.get("snippet", ""),
+                        "updated_time": thread.get("updated_time", ""),
+                        "message_count": thread.get("message_count", 0),
+                        "messages": messages,
+                    })
+
+                logger.info(f"Facebook: fetched {len(results)} historical conversations")
+                return results
+
+        except Exception as e:
+            logger.error(f"Facebook historical sync error: {e}")
+            return []
 
 
 class MockFacebookProvider(BaseIntegrationProvider):

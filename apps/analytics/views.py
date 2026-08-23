@@ -23,7 +23,7 @@ class DashboardView(APIView):
             return Response({})
 
         ws_id = request.query_params.get("workspace_id", ws_ids[0])
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             ws_id = ws_ids[0]
 
         # Date range
@@ -98,6 +98,7 @@ class DashboardView(APIView):
             "open_complaints": open_complaints,
             "messages_used": messages_used,
             "message_limit": message_limit,
+            "messages_remaining": max(message_limit - messages_used, 0),
         })
 
 
@@ -109,7 +110,7 @@ class AnalyticsChartsView(APIView):
         if not ws_ids:
             return Response({})
         ws_id = request.query_params.get("workspace_id", ws_ids[0])
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             ws_id = ws_ids[0]
 
         days = int(request.query_params.get("days", 30))

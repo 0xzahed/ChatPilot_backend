@@ -39,7 +39,7 @@ class InviteMemberView(APIView):
     def post(self, request):
         ws_id = request.data.get("workspace_id")
         ws_ids = get_user_workspaces(request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=400)
         email = request.data.get("email")
         role = request.data.get("role", "agent")

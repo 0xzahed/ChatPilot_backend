@@ -185,7 +185,7 @@ class WebchatConfigManageView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         ws_id = self.kwargs["workspace_id"]
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             return None
         config, _ = WebchatConfig.objects.get_or_create(workspace_id=ws_id)
         return config

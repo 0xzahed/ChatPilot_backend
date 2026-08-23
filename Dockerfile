@@ -16,6 +16,8 @@ RUN pip install --no-cache-dir -r requirements/development.txt
 
 COPY . .
 
-EXPOSE 8000
+RUN chmod +x /app/entrypoint.sh
 
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
+EXPOSE 9001
+
+CMD ["/app/entrypoint.sh"]

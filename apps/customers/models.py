@@ -51,7 +51,7 @@ class CustomerChannel(models.Model):
     channel = models.CharField(max_length=20)  # facebook, instagram, whatsapp, website
     external_id = models.CharField(max_length=255)  # PSID, IG ID, phone number, visitor ID
     display_name = models.CharField(max_length=255, blank=True)
-    profile_url = models.URLField(blank=True)
+    profile_url = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

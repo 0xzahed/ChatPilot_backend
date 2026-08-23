@@ -28,8 +28,16 @@ class ConversationListSerializer(serializers.ModelSerializer):
         ]
 
     def get_customer_avatar(self, obj):
+        # Check uploaded avatar first
         if obj.customer.avatar:
             return obj.customer.avatar.url
+        # Check channel profile_url (e.g. Facebook profile pic)
+        from apps.customers.models import CustomerChannel
+        channel = CustomerChannel.objects.filter(
+            customer=obj.customer, channel=obj.channel
+        ).first()
+        if channel and channel.profile_url:
+            return channel.profile_url
         return None
 
     def get_assigned_to_name(self, obj):

@@ -1,5 +1,7 @@
 from django.contrib import admin
 from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
@@ -23,6 +25,7 @@ urlpatterns = [
     path("api/team/", include("apps.team.urls")),
     path("api/audit/", include("apps.audit.urls")),
     path("api/webchat/", include("apps.webchat.urls")),
+    path("api/admin/", include("apps.platform_admin.urls")),
 
     # Webhook endpoints for external platforms
     path("webhooks/meta/", include("apps.integrations.facebook.urls_webhook")),
@@ -33,3 +36,7 @@ urlpatterns = [
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
 ]
+
+# Serve static files (webchat widget)
+urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+urlpatterns += static("/static/", document_root=settings.BASE_DIR / "static")

@@ -27,9 +27,19 @@ class OpenAIProvider(BaseAIProvider):
             "max_tokens": max_tokens,
         }
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=60) as client:
                 resp = client.post(f"{self._base_url}/chat/completions", json=payload, headers=headers)
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    try:
+                        err_data = resp.json()
+                        err_msg = err_data.get("error", {}).get("message", "") or err_data.get("error", {}).get("type", "")
+                        if not err_msg and isinstance(err_data.get("error"), str):
+                            err_msg = err_data["error"]
+                        if not err_msg:
+                            err_msg = err_data.get("message", "")
+                    except Exception:
+                        err_msg = resp.text[:200]
+                    return AIResponse(text=f"[AI Error: {err_msg or resp.reason_phrase} (HTTP {resp.status_code})]", model=self.model)
                 data = resp.json()
                 choice = data["choices"][0]["message"]["content"]
                 usage = data.get("usage", {})
@@ -39,6 +49,8 @@ class OpenAIProvider(BaseAIProvider):
                     tokens_output=usage.get("completion_tokens", 0),
                     model=data.get("model", self.model),
                 )
+        except httpx.TimeoutException:
+            return AIResponse(text="[AI Error: Request timed out. Please try again.]", model=self.model)
         except Exception as e:
             return AIResponse(text=f"[AI Error: {str(e)}]", model=self.model)
 

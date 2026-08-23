@@ -41,7 +41,7 @@ class ProductListView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         ws_id = self.request.data.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             ws_id = ws_ids[0] if ws_ids else None
         serializer.save(workspace_id=ws_id)
 
@@ -90,6 +90,6 @@ class CategoryListView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         ws_id = self.request.data.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             ws_id = ws_ids[0] if ws_ids else None
         serializer.save(workspace_id=ws_id)

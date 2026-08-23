@@ -17,7 +17,7 @@ class AISettingsView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         ws_id = self.kwargs["workspace_id"]
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         settings_obj, _ = AISettings.objects.get_or_create(workspace_id=ws_id)
         return settings_obj
@@ -30,7 +30,7 @@ class AIInstructionsView(generics.RetrieveUpdateAPIView):
     def get_object(self):
         ws_id = self.kwargs["workspace_id"]
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         instructions, _ = AIInstructions.objects.get_or_create(workspace_id=ws_id)
         return instructions
@@ -50,7 +50,79 @@ class AIUsageView(APIView):
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
-        if workspace_id not in ws_ids:
+        if str(workspace_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         usage = AIUsage.objects.filter(workspace_id=workspace_id).order_by("-date")[:30]
         return Response(AIUsageSerializer(usage, many=True).data)
+
+
+class AITestView(APIView):
+    """Test AI assistant with a sample message using current settings."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, workspace_id):
+        ws_ids = get_user_workspaces(request.user)
+        if str(workspace_id) not in ws_ids:
+            return Response({"error": "Invalid workspace."}, status=403)
+
+        message = request.data.get("message", "").strip()
+        if not message:
+            return Response({"error": "Message is required."}, status=400)
+
+        from apps.workspaces.models import Workspace
+        from apps.ai.services.ai_service import AIService
+
+        try:
+            workspace = Workspace.objects.get(id=workspace_id)
+        except Workspace.DoesNotExist:
+            return Response({"error": "Workspace not found."}, status=404)
+
+        settings_obj, _ = AISettings.objects.get_or_create(workspace=workspace)
+        instructions, _ = AIInstructions.objects.get_or_create(workspace=workspace)
+
+        # Build system prompt from instructions (same as AIService)
+        ai_service = AIService(workspace)
+        system_prompt = ai_service._build_system_prompt()
+
+        # Build messages for the AI
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ]
+
+        # Call the real provider
+        try:
+            response = ai_service.provider.chat_completion(
+                messages=messages,
+                temperature=settings_obj.temperature,
+                max_tokens=settings_obj.max_tokens,
+            )
+
+            # Check if the response is an error
+            if response.text.startswith("[AI Error:"):
+                return Response({
+                    "response": response.text,
+                    "provider": settings_obj.provider,
+                    "model": settings_obj.model_name,
+                    "mode": settings_obj.mode,
+                    "error": True,
+                }, status=200)  # Return 200 so frontend can display the error message
+
+            return Response({
+                "response": response.text,
+                "provider": settings_obj.provider,
+                "model": response.model or settings_obj.model_name,
+                "mode": settings_obj.mode,
+                "tokens_input": response.tokens_input,
+                "tokens_output": response.tokens_output,
+                "confidence": response.confidence,
+            })
+        except Exception as e:
+            return Response({
+                "response": f"[AI Error: {str(e)}]",
+                "provider": settings_obj.provider,
+                "model": settings_obj.model_name,
+                "mode": settings_obj.mode,
+                "error": True,
+            }, status=200)

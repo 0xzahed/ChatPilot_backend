@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
+import logging
 
 from apps.workspaces.models import WorkspaceMembership
 from .models import Conversation, Message, MessageAttachment, Label, ConversationLabel
@@ -13,12 +14,14 @@ from .serializers import (
     MessageSerializer, CreateMessageSerializer, AssignConversationSerializer,
     UpdateConversationSerializer, LabelSerializer,
 )
+
+logger = logging.getLogger(__name__)
 from apps.ai.services.ai_service import AIService
 
 
 def get_user_workspaces(user):
-    """Return workspace IDs the user belongs to."""
-    return list(user.workspace_memberships.values_list("workspace_id", flat=True))
+    """Return workspace IDs (as strings) the user belongs to."""
+    return [str(pk) for pk in user.workspace_memberships.values_list("workspace_id", flat=True)]
 
 
 class ConversationListView(generics.ListAPIView):
@@ -121,29 +124,97 @@ class SendMessageView(APIView):
         serializer.is_valid(raise_exception=True)
 
         is_note = serializer.validated_data.get("is_note", False)
+        content = serializer.validated_data["content"]
+        msg_type = serializer.validated_data.get("message_type", "text")
+
         message = Message.objects.create(
             conversation=conv,
             workspace=conv.workspace,
             sender_type="system" if is_note else "agent",
             direction="outbound",
-            message_type="note" if is_note else serializer.validated_data.get("message_type", "text"),
-            content=serializer.validated_data["content"],
+            message_type="note" if is_note else msg_type,
+            content=content,
             sent_by=request.user,
             reply_to_id=serializer.validated_data.get("reply_to"),
             status="sent",
         )
 
+        # If this is a channel conversation (not a note), send via the provider
+        if not is_note and conv.channel != "website":
+            try:
+                _send_to_channel(conv, content, msg_type)
+                message.status = "delivered"
+                message.save(update_fields=["status"])
+            except Exception as e:
+                logger.error(f"Failed to send message to {conv.channel}: {e}")
+                message.status = "failed"
+                message.save(update_fields=["status"])
+                # Still return success since message is saved in DB
+
         # Update conversation preview
         conv.last_message_at = timezone.now()
-        conv.last_message_preview = serializer.validated_data["content"][:100]
+        conv.last_message_preview = content[:100]
         conv.status = "open"
-        conv.save(update_fields=["last_message_at", "last_message_preview", "status"])
+        # Agent replied → mark as read
+        if not is_note:
+            conv.unread_count = 0
+        conv.save(update_fields=["last_message_at", "last_message_preview", "status", "unread_count"])
 
-        # Broadcast via websocket
-        from .consumers import broadcast_new_message
+        # Broadcast via websocket — both conversation group and workspace group
+        from .consumers import broadcast_new_message, broadcast_workspace_event, broadcast_conversation_update
         broadcast_new_message(message)
+        broadcast_conversation_update(conv)
+        # Also notify workspace so conversation list refreshes
+        broadcast_workspace_event(
+            str(conv.workspace_id), "new_message",
+            {"conversation_id": str(conv.id), "channel": conv.channel},
+        )
 
         return Response(MessageSerializer(message).data, status=201)
+
+
+def _send_to_channel(conversation, content, message_type="text"):
+    """Send a message to the external channel (Facebook, WhatsApp, etc.)."""
+    from apps.customers.models import CustomerChannel
+    from apps.integrations.models import Integration
+
+    # Get the customer's external ID on this channel
+    channel = CustomerChannel.objects.filter(
+        customer=conversation.customer, channel=conversation.channel
+    ).first()
+    if not channel:
+        raise Exception(f"No channel identity found for customer on {conversation.channel}")
+
+    # Get the integration
+    integration = Integration.objects.filter(
+        workspace=conversation.workspace,
+        integration_type=conversation.channel,
+        is_active=True,
+    ).first()
+    if not integration:
+        raise Exception(f"No active {conversation.channel} integration found")
+
+    # Get provider and send
+    if conversation.channel == "facebook":
+        from apps.integrations.facebook.client import get_facebook_provider
+        provider = get_facebook_provider(integration)
+    elif conversation.channel == "instagram":
+        from apps.integrations.instagram.client import get_instagram_provider
+        provider = get_instagram_provider(integration)
+    elif conversation.channel == "whatsapp":
+        from apps.integrations.whatsapp.client import get_whatsapp_provider
+        provider = get_whatsapp_provider(integration)
+    else:
+        return  # Website/webchat doesn't need external send
+
+    result = provider.send_message(
+        recipient_id=channel.external_id,
+        content=content,
+        message_type=message_type,
+    )
+    if not result.success:
+        raise Exception("Provider returned failure")
+    return result
 
 
 class AssignConversationView(APIView):
@@ -261,7 +332,7 @@ class LabelListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         ws_id = self.request.data.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
-        if ws_id not in ws_ids:
+        if str(ws_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=400)
         serializer.save(workspace_id=ws_id)
 

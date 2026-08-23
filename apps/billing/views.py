@@ -20,7 +20,7 @@ class SubscriptionView(APIView):
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
-        if workspace_id not in ws_ids:
+        if str(workspace_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         sub = Subscription.objects.filter(workspace_id=workspace_id).first()
         if not sub:
@@ -29,7 +29,7 @@ class SubscriptionView(APIView):
 
     def post(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
-        if workspace_id not in ws_ids:
+        if str(workspace_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         plan_id = request.data.get("plan_id")
         plan = Plan.objects.filter(id=plan_id, is_active=True).first()
@@ -62,7 +62,7 @@ class UsageView(APIView):
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
-        if workspace_id not in ws_ids:
+        if str(workspace_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
         records = UsageRecord.objects.filter(workspace_id=workspace_id).order_by("-period_start")[:12]
         return Response(UsageRecordSerializer(records, many=True).data)

@@ -14,7 +14,7 @@ class UsageSummaryView(APIView):
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
-        if workspace_id not in ws_ids:
+        if str(workspace_id) not in ws_ids:
             return Response({"error": "Invalid workspace."}, status=403)
 
         today = timezone.now().date()
