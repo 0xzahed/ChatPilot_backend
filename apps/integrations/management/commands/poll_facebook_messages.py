@@ -75,17 +75,22 @@ class Command(BaseCommand):
     def _poll_integration(self, integration):
         """Poll a single Facebook integration for new messages."""
         from apps.integrations.facebook.client import get_facebook_provider
-        from apps.integrations.views import _sync_facebook_historical
         from apps.inbox.models import Message, Conversation
         from apps.inbox.consumers import broadcast_new_message, broadcast_workspace_event
         from django.utils import timezone
 
         creds = integration.get_credentials()
-        page_token = creds.get("page_access_token", "")
-        page_id = creds.get("page_id", "")
+        pages = creds.get("pages", [])
 
-        if not page_token or not page_id:
-            self.stdout.write(self.style.WARNING(f"No page token/id for {integration.id}"))
+        # Legacy single-page fallback
+        if not pages and creds.get("page_access_token"):
+            pages = [{
+                "page_id": creds.get("page_id", ""),
+                "page_access_token": creds.get("page_access_token", ""),
+            }]
+
+        if not pages:
+            self.stdout.write(self.style.WARNING(f"No pages configured for {integration.id}"))
             return
 
         provider = get_facebook_provider(integration)
@@ -93,7 +98,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("Provider has no fetch_historical_conversations"))
             return
 
-        # Fetch conversations with messages
+        # Fetch conversations with messages (provider loops through all pages)
         threads = provider.fetch_historical_conversations()
         if not threads:
             return
@@ -104,12 +109,16 @@ class Command(BaseCommand):
 
         self.stdout.write(
             f"[{timezone.now().strftime('%H:%M:%S')}] "
-            f"Polling: {len(threads)} threads from Facebook"
+            f"Polling: {len(threads)} threads from Facebook ({len(pages)} pages)"
         )
+
+        # Build a set of page IDs for sender-type detection
+        page_ids = {p.get("page_id", "") for p in pages if p.get("page_id")}
 
         for thread in threads:
             sender_id = thread["sender_id"]
             sender_name = thread["sender_name"]
+            thread_page_id = thread.get("page_id", "")
 
             # Find or create customer
             from apps.customers.models import Customer, CustomerChannel
@@ -121,53 +130,15 @@ class Command(BaseCommand):
                 if sender_name and customer.name == "Unknown Customer":
                     customer.name = sender_name
                     customer.save(update_fields=["name"])
-                # Fetch profile picture if missing
-                if not channel.profile_url:
-                    try:
-                        import httpx
-                        presp = httpx.get(
-                            f"https://graph.facebook.com/v20.0/{sender_id}/picture",
-                            params={"access_token": page_token, "redirect": "false", "height": 200, "width": 200},
-                            timeout=10,
-                        )
-                        if presp.status_code == 200:
-                            pdata = presp.json().get("data", {})
-                            purl = pdata.get("url", "")
-                            if purl:
-                                channel.profile_url = purl
-                                channel.save(update_fields=["profile_url"])
-                    except Exception:
-                        pass
-                    # Fallback: public profile pic URL (works without permissions)
-                    if not channel.profile_url:
-                        channel.profile_url = f"https://graph.facebook.com/{sender_id}/picture?type=large"
-                        channel.save(update_fields=["profile_url"])
             else:
                 customer = Customer.objects.create(
                     workspace=workspace, name=sender_name
                 )
-                # Fetch profile picture
-                profile_url = ""
-                try:
-                    import httpx
-                    presp = httpx.get(
-                        f"https://graph.facebook.com/v20.0/{sender_id}/picture",
-                        params={"access_token": page_token, "redirect": "false", "height": 200, "width": 200},
-                        timeout=10,
-                    )
-                    if presp.status_code == 200:
-                        profile_url = presp.json().get("data", {}).get("url", "")
-                except Exception:
-                    pass
-                # Fallback: public profile pic URL
-                if not profile_url:
-                    profile_url = f"https://graph.facebook.com/{sender_id}/picture?type=large"
                 CustomerChannel.objects.create(
                     customer=customer,
                     channel="facebook",
                     external_id=sender_id,
                     display_name=sender_name,
-                    profile_url=profile_url,
                 )
 
             # Find or create conversation
@@ -198,7 +169,7 @@ class Command(BaseCommand):
                 if Message.objects.filter(external_id=msg_ext_id).exists():
                     continue
 
-                is_from_page = (m.get("from_id") == page_id)
+                is_from_page = (m.get("from_id") in page_ids) if page_ids else False
                 sender_type = "agent" if is_from_page else "customer"
                 direction = "outbound" if is_from_page else "inbound"
 

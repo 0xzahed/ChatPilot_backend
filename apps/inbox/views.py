@@ -17,11 +17,18 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 from apps.ai.services.ai_service import AIService
+from common.api_response import api_error, api_success, api_paginated
 
 
 def get_user_workspaces(user):
     """Return workspace IDs (as strings) the user belongs to."""
     return [str(pk) for pk in user.workspace_memberships.values_list("workspace_id", flat=True)]
+
+
+def get_conversation_for_user(user, conversation_id):
+    """Fetch a conversation only if the user is a member of its workspace."""
+    ws_ids = get_user_workspaces(user)
+    return Conversation.objects.filter(id=conversation_id, workspace_id__in=ws_ids).first()
 
 
 class ConversationListView(generics.ListAPIView):
@@ -100,12 +107,16 @@ class MessageListView(generics.ListAPIView):
 
     def get_queryset(self):
         conversation_id = self.kwargs["conversation_id"]
-        return Message.objects.filter(conversation_id=conversation_id).prefetch_related("attachments").order_by("created_at")
+        ws_ids = get_user_workspaces(self.request.user)
+        return Message.objects.filter(
+            conversation_id=conversation_id,
+            conversation__workspace_id__in=ws_ids,
+        ).prefetch_related("attachments").order_by("created_at")
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
-        # Mark conversation as read
-        conv = Conversation.objects.filter(id=self.kwargs["conversation_id"]).first()
+        # Mark conversation as read (only if user has access)
+        conv = get_conversation_for_user(request.user, self.kwargs["conversation_id"])
         if conv and conv.unread_count > 0:
             conv.unread_count = 0
             conv.save(update_fields=["unread_count"])
@@ -116,9 +127,9 @@ class SendMessageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
 
         serializer = CreateMessageSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -211,6 +222,7 @@ def _send_to_channel(conversation, content, message_type="text"):
         recipient_id=channel.external_id,
         content=content,
         message_type=message_type,
+        page_id=conversation.config.get("page_id", ""),
     )
     if not result.success:
         raise Exception("Provider returned failure")
@@ -221,15 +233,15 @@ class AssignConversationView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
         serializer = AssignConversationSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         from apps.accounts.models import User
         agent = User.objects.filter(id=serializer.validated_data["assigned_to"]).first()
         if not agent:
-            return Response({"error": "Agent not found."}, status=404)
+            return api_error("Agent not found.", code="NOT_FOUND", status_code=404)
         conv.assigned_to = agent
         if conv.handled_by == "unassigned":
             conv.handled_by = "human"
@@ -244,49 +256,49 @@ class CloseConversationView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
         conv.status = "closed"
         conv.save(update_fields=["status"])
         from .consumers import broadcast_conversation_update
         broadcast_conversation_update(conv)
-        return Response({"detail": "Conversation closed."})
+        return api_success(message="Conversation closed")
 
 
 class ReopenConversationView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
         conv.status = "open"
         conv.save(update_fields=["status"])
         from .consumers import broadcast_conversation_update
         broadcast_conversation_update(conv)
-        return Response({"detail": "Conversation reopened."})
+        return api_success(message="Conversation reopened")
 
 
 class MarkUnreadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
         conv.unread_count = 1
         conv.save(update_fields=["unread_count"])
-        return Response({"detail": "Marked as unread."})
+        return api_success(message="Marked as unread")
 
 
 class AISuggestView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
         ai_service = AIService(conv.workspace)
         result = ai_service.generate_suggestion(conv)
         return Response(result)
@@ -296,26 +308,26 @@ class ConversationLabelsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         return Response(LabelSerializer(conv.labels.all(), many=True).data)
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         label_id = request.data.get("label_id")
         label = Label.objects.filter(id=label_id, workspace=conv.workspace).first()
         if not label:
-            return Response({"error": "Label not found."}, status=404)
+            return api_error("Label not found.", code="NOT_FOUND", status_code=404)
         ConversationLabel.objects.get_or_create(conversation=conv, label=label)
         return Response(LabelSerializer(conv.labels.all(), many=True).data, status=201)
 
     def delete(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         label_id = request.data.get("label_id")
         ConversationLabel.objects.filter(conversation=conv, label_id=label_id).delete()
         return Response(status=204)
@@ -333,7 +345,7 @@ class LabelListCreateView(generics.ListCreateAPIView):
         ws_id = self.request.data.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
         if str(ws_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
         serializer.save(workspace_id=ws_id)
 
 
@@ -350,9 +362,9 @@ class TypingIndicatorView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, conversation_id):
-        conv = Conversation.objects.filter(id=conversation_id).first()
+        conv = get_conversation_for_user(request.user, conversation_id)
         if not conv:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         from .consumers import broadcast_typing
         broadcast_typing(conv, request.user, request.data.get("is_typing", True))
-        return Response({"detail": "ok"})
+        return api_success(message="OK")

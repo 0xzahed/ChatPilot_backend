@@ -9,6 +9,7 @@ from .serializers import OrderSerializer, CreateOrderSerializer
 from apps.products.models import Product
 from apps.customers.models import Customer
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class OrderListView(generics.ListCreateAPIView):
@@ -48,11 +49,11 @@ class OrderListView(generics.ListCreateAPIView):
 
         ws_ids = get_user_workspaces(request.user)
         if data["workspace_id"] not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
 
         customer = Customer.objects.filter(id=data["customer_id"], workspace_id=data["workspace_id"]).first()
         if not customer:
-            return Response({"error": "Customer not found."}, status=404)
+            return api_error("Customer not found.", code="NOT_FOUND", status_code=404)
 
         # Calculate totals
         subtotal = Decimal("0")

@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.workspaces.models import WorkspaceMembership, Workspace
 from apps.workspaces.serializers import WorkspaceMembershipSerializer
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class TeamListView(generics.ListAPIView):
@@ -40,13 +41,13 @@ class InviteMemberView(APIView):
         ws_id = request.data.get("workspace_id")
         ws_ids = get_user_workspaces(request.user)
         if str(ws_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
         email = request.data.get("email")
         role = request.data.get("role", "agent")
         from apps.accounts.models import User
         user = User.objects.filter(email=email).first()
         if not user:
-            return Response({"error": "User not found. They need to register first."}, status=404)
+            return api_error("User not found. They need to register first.", code="NOT_FOUND", status_code=404)
         membership, created = WorkspaceMembership.objects.get_or_create(
             workspace_id=ws_id, user=user,
             defaults={"role": role},

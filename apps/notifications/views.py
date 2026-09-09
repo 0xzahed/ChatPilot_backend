@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.db.models import Q
 from .models import Notification
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class NotificationSer(serializers.ModelSerializer):
@@ -32,12 +33,15 @@ class MarkNotificationReadView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        notif = Notification.objects.filter(id=pk).first()
+        ws_ids = get_user_workspaces(request.user)
+        notif = Notification.objects.filter(
+            Q(id=pk, workspace_id__in=ws_ids) | Q(id=pk, user=request.user)
+        ).first()
         if not notif:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         notif.is_read = True
         notif.save(update_fields=["is_read"])
-        return Response({"detail": "Marked as read."})
+        return api_success(message="Marked as read")
 
 
 class MarkAllNotificationsReadView(APIView):
@@ -46,4 +50,4 @@ class MarkAllNotificationsReadView(APIView):
     def post(self, request):
         ws_ids = get_user_workspaces(request.user)
         Notification.objects.filter(workspace_id__in=ws_ids, is_read=False).update(is_read=True)
-        return Response({"detail": "All marked as read."})
+        return api_success(message="All marked as read")

@@ -13,6 +13,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
 from .models import User, Session, PasswordResetToken, EmailVerificationToken
+from common.api_response import api_error, api_success, api_paginated
 from .serializers import (
     UserSerializer, RegisterSerializer, CustomTokenObtainPairSerializer,
     ChangePasswordSerializer, ForgotPasswordSerializer, ResetPasswordSerializer,
@@ -30,11 +31,15 @@ class RegisterView(generics.CreateAPIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
-        return Response({
-            "user": UserSerializer(user).data,
-            "access": str(refresh.access_token),
-            "refresh": str(refresh),
-        }, status=status.HTTP_201_CREATED)
+        return api_success(
+            data={
+                "user": UserSerializer(user).data,
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+            },
+            message="Registration successful",
+            status_code=201,
+        )
 
 
 class LoginView(TokenObtainPairView):
@@ -49,6 +54,8 @@ class LoginView(TokenObtainPairView):
             if user:
                 user.last_active_at = timezone.now()
                 user.save(update_fields=["last_active_at"])
+            # Wrap in standard envelope
+            return api_success(data=response.data, message="Login successful")
         return response
 
 
@@ -63,20 +70,20 @@ class LogoutView(APIView):
             Session.objects.filter(user=request.user, refresh_token_jti=token["jti"]).update(revoked_at=timezone.now())
         except Exception:
             pass
-        return Response({"detail": "Logged out successfully."}, status=status.HTTP_200_OK)
+        return api_success(message="Logged out successfully")
 
 
 class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response(UserSerializer(request.user).data)
+        return api_success(data=UserSerializer(request.user).data, message="User fetched")
 
     def patch(self, request):
         serializer = UpdateProfileSerializer(request.user, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(UserSerializer(request.user).data)
+        return api_success(data=UserSerializer(request.user).data, message="Profile updated")
 
 
 class ChangePasswordView(APIView):
@@ -87,10 +94,10 @@ class ChangePasswordView(APIView):
         serializer.is_valid(raise_exception=True)
         user = request.user
         if not user.check_password(serializer.validated_data["old_password"]):
-            return Response({"error": "Incorrect old password."}, status=status.HTTP_400_BAD_REQUEST)
+            return api_error("Incorrect old password.", code="BAD_REQUEST", status_code=400)
         user.set_password(serializer.validated_data["new_password"])
         user.save()
-        return Response({"detail": "Password changed successfully."})
+        return api_success(message="Password changed successfully")
 
 
 class ForgotPasswordView(APIView):
@@ -116,7 +123,7 @@ class ForgotPasswordView(APIView):
                 )
             except Exception:
                 pass
-        return Response({"detail": "If the email exists, a reset link has been sent."})
+        return api_success(message="If the email exists, a reset link has been sent.")
 
 
 class ResetPasswordView(APIView):
@@ -130,12 +137,12 @@ class ResetPasswordView(APIView):
             expires_at__gt=timezone.now(),
         ).first()
         if not token_obj:
-            return Response({"error": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
+            return api_error("Invalid or expired token.", code="BAD_REQUEST", status_code=400)
         token_obj.user.set_password(serializer.validated_data["new_password"])
         token_obj.user.save()
         token_obj.used_at = timezone.now()
         token_obj.save()
-        return Response({"detail": "Password reset successfully."})
+        return api_success(message="Password reset successfully")
 
 
 class SessionListView(generics.ListAPIView):
@@ -153,4 +160,4 @@ class RevokeSessionView(APIView):
         session = get_object_or_404(Session, id=session_id, user=request.user)
         session.revoked_at = timezone.now()
         session.save()
-        return Response({"detail": "Session revoked."})
+        return api_success(message="Session revoked")

@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "django_filters",
     "drf_spectacular",
@@ -144,7 +145,10 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
     ),
-    "DEFAULT_PAGINATION_CLASS": "common.pagination.StandardPagination",
+    "DEFAULT_RENDERER_CLASSES": (
+        "common.renderers.StandardizedJSONRenderer",
+    ),
+    "DEFAULT_PAGINATION_CLASS": "api_response_toolkit.drf.pagination.StandardizedPageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_FILTER_BACKENDS": (
         "django_filters.rest_framework.DjangoFilterBackend",
@@ -152,7 +156,7 @@ REST_FRAMEWORK = {
         "rest_framework.filters.OrderingFilter",
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "EXCEPTION_HANDLER": "common.exceptions.custom_exception_handler",
+    "EXCEPTION_HANDLER": "api_response_toolkit.drf.exception_handler.api_exception_handler",
 }
 
 SIMPLE_JWT = {

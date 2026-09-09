@@ -46,7 +46,12 @@ class Integration(models.Model):
         import json
         encrypted = {}
         for key, value in credentials.items():
-            encrypted[key] = encrypt_value(str(value)) if value else ""
+            if value is None:
+                encrypted[key] = ""
+            elif isinstance(value, (dict, list)):
+                encrypted[key] = encrypt_value(json.dumps(value))
+            else:
+                encrypted[key] = encrypt_value(str(value))
         self.credentials_encrypted = json.dumps(encrypted)
 
     def get_credentials(self) -> dict:
@@ -55,7 +60,15 @@ class Integration(models.Model):
             return {}
         try:
             encrypted = json.loads(self.credentials_encrypted)
-            return {k: decrypt_value(v) for k, v in encrypted.items()}
+            result = {}
+            for k, v in encrypted.items():
+                decrypted = decrypt_value(v)
+                # Try to parse JSON (for dict/list values)
+                try:
+                    result[k] = json.loads(decrypted)
+                except (json.JSONDecodeError, TypeError):
+                    result[k] = decrypted
+            return result
         except Exception:
             return {}
 

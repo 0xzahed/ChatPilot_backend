@@ -64,6 +64,7 @@ class Conversation(models.Model):
     has_order = models.BooleanField(default=False)
     ai_enabled = models.BooleanField(default=True)
     language = models.CharField(max_length=10, default="en")
+    config = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

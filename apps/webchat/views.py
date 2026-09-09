@@ -9,6 +9,7 @@ from apps.inbox.models import Conversation, Message
 from apps.customers.models import Customer, CustomerChannel
 from django.utils import timezone
 import uuid
+from common.api_response import api_error, api_success, api_paginated
 
 
 class WebchatConfigView(generics.RetrieveUpdateAPIView):
@@ -32,16 +33,16 @@ class WebchatPublicConfigView(APIView):
         try:
             config = WebchatConfig.objects.get(workspace_id=workspace_id, is_enabled=True)
         except WebchatConfig.DoesNotExist:
-            return Response({"error": "Webchat not enabled"}, status=404)
+            return api_error("Webchat not enabled", code="NOT_FOUND", status_code=404)
 
-        return Response({
+        return api_success(data={
             "workspace_id": str(config.workspace_id),
             "title": config.title,
             "welcome_message": config.welcome_message,
             "primary_color": config.primary_color,
             "position": config.position,
             "logo_url": config.logo_url,
-        })
+        }, message="Config fetched")
 
 
 class WebchatSessionView(APIView):
@@ -69,10 +70,10 @@ class WebchatSessionView(APIView):
                 if visitor_phone:
                     session.visitor_phone = visitor_phone
                     session.save(update_fields=["visitor_phone"])
-                return Response({
+                return api_success(data={
                     "session_token": session.session_token,
                     "visitor_name": session.visitor_name,
-                })
+        }, message="Session created")
 
         # Create new session
         token = str(uuid.uuid4())
@@ -83,10 +84,10 @@ class WebchatSessionView(APIView):
             visitor_email=visitor_email,
             visitor_phone=visitor_phone,
         )
-        return Response({
+        return api_success(data={
             "session_token": session.session_token,
             "visitor_name": session.visitor_name,
-        }, status=201)
+        }, message="Session created", status_code=201)
 
 
 class WebchatMessageView(APIView):
@@ -99,7 +100,7 @@ class WebchatMessageView(APIView):
         content = request.data.get("content", "").strip()
 
         if not content:
-            return Response({"error": "Message content required."}, status=400)
+            return api_error("Message content required.", code="BAD_REQUEST", status_code=400)
 
         # Get or create session
         session = None
@@ -189,11 +190,11 @@ class WebchatMessageView(APIView):
             except Exception:
                 pass
 
-        return Response({
+        return api_success(data={
             "status": "sent",
             "session_token": session.session_token,
             "auto_reply": auto_reply,
-        }, status=201)
+        }, message="Message sent", status_code=201)
 
 
 def msg_id():

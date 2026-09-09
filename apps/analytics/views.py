@@ -12,6 +12,7 @@ from apps.orders.models import Order
 from apps.complaints.models import Complaint
 from apps.ai.models import AIEvent
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class DashboardView(APIView):
@@ -20,7 +21,7 @@ class DashboardView(APIView):
     def get(self, request):
         ws_ids = get_user_workspaces(request.user)
         if not ws_ids:
-            return Response({})
+            return api_success()
 
         ws_id = request.query_params.get("workspace_id", ws_ids[0])
         if str(ws_id) not in ws_ids:
@@ -82,7 +83,7 @@ class DashboardView(APIView):
         sub = Subscription.objects.filter(workspace_id=ws_id).first()
         message_limit = sub.plan.message_limit if sub else 6600
 
-        return Response({
+        return api_success(data={
             "total_conversations": total_conversations,
             "open_conversations": open_conversations,
             "unread_messages": unread_messages,
@@ -99,7 +100,7 @@ class DashboardView(APIView):
             "messages_used": messages_used,
             "message_limit": message_limit,
             "messages_remaining": max(message_limit - messages_used, 0),
-        })
+        }, message="Dashboard stats")
 
 
 class AnalyticsChartsView(APIView):
@@ -108,7 +109,7 @@ class AnalyticsChartsView(APIView):
     def get(self, request):
         ws_ids = get_user_workspaces(request.user)
         if not ws_ids:
-            return Response({})
+            return api_success()
         ws_id = request.query_params.get("workspace_id", ws_ids[0])
         if str(ws_id) not in ws_ids:
             ws_id = ws_ids[0]
@@ -175,7 +176,7 @@ class AnalyticsChartsView(APIView):
                 day = first_reply.created_at.date().isoformat()
                 response_by_day[day].append(delta)
 
-        return Response({
+        return api_success(data={
             "conversations_over_time": [{"date": k, "value": v} for k, v in sorted(conv_by_day.items())],
             "orders_over_time": [{"date": k, "value": v} for k, v in sorted(orders_by_day.items())],
             "revenue_over_time": [{"date": k, "value": v} for k, v in sorted(revenue_by_day.items())],
@@ -196,4 +197,4 @@ class AnalyticsChartsView(APIView):
                 {"date": k, "value": round(sum(v) / len(v), 1)}
                 for k, v in sorted(response_by_day.items())
             ],
-        })
+        }, message="Dashboard stats")

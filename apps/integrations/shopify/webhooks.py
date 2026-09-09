@@ -5,6 +5,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from apps.integrations.models import WebhookEvent
+from common.api_response import api_error, api_success, api_paginated
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class ShopifyWebhookView(View):
         try:
             payload = json.loads(request.body)
         except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
+            return JsonResponse({"success": False, "message": "Invalid JSON", "code": "BAD_REQUEST"}, status=400)
 
         topic = request.headers.get("X-Shopify-Topic", "unknown")
         webhook_event = WebhookEvent.objects.create(

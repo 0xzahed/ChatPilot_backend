@@ -3,6 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from .models import Workspace, WorkspaceMembership, WorkspaceSettings
+from common.api_response import api_error, api_success, api_paginated
 from .serializers import (
     WorkspaceSerializer, WorkspaceMembershipSerializer,
     CreateWorkspaceSerializer, WorkspaceSettingsSerializer,
@@ -15,7 +16,7 @@ class WorkspaceListView(APIView):
     def get(self, request):
         memberships = request.user.workspace_memberships.select_related("workspace").all()
         workspaces = [m.workspace for m in memberships]
-        return Response(WorkspaceSerializer(workspaces, many=True).data)
+        return api_success(data=WorkspaceSerializer(workspaces, many=True).data, message="Workspaces fetched")
 
     def post(self, request):
         serializer = CreateWorkspaceSerializer(data=request.data)
@@ -29,10 +30,10 @@ class WorkspaceListView(APIView):
         membership = WorkspaceMembership.objects.create(
             workspace=workspace, user=request.user, role="owner",
         )
-        return Response({
+        return api_success(data={
             "workspace": WorkspaceSerializer(workspace).data,
             "membership": WorkspaceMembershipSerializer(membership).data,
-        }, status=status.HTTP_201_CREATED)
+        }, message="Workspace created", status_code=201)
 
 
 class WorkspaceDetailView(generics.RetrieveUpdateAPIView):
@@ -55,18 +56,18 @@ class WorkspaceMembersView(generics.ListCreateAPIView):
         workspace_id = kwargs["workspace_id"]
         workspace = Workspace.objects.filter(id=workspace_id, memberships__user=request.user).first()
         if not workspace:
-            return Response({"error": "Workspace not found."}, status=404)
+            return api_error("Workspace not found.", code="NOT_FOUND", status_code=404)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         from apps.accounts.models import User
         user = User.objects.filter(email=serializer.validated_data.get("user_email")).first()
         if not user:
-            return Response({"error": "User not found."}, status=404)
+            return api_error("User not found.", code="NOT_FOUND", status_code=404)
         membership, created = WorkspaceMembership.objects.get_or_create(
             workspace=workspace, user=user,
             defaults={"role": serializer.validated_data.get("role", "agent")},
         )
-        return Response(WorkspaceMembershipSerializer(membership).data, status=201 if created else 200)
+        return api_success(data=WorkspaceMembershipSerializer(membership).data, message="Member added" if created else "Member exists", status_code=201 if created else 200)
 
 
 class WorkspaceSettingsView(generics.RetrieveUpdateAPIView):

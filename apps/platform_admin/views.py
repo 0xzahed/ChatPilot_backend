@@ -18,6 +18,7 @@ from apps.orders.models import Order
 from apps.customers.models import Customer
 from apps.billing.models import Subscription
 from apps.audit.models import AuditLog
+from common.api_response import api_error, api_success, api_paginated
 
 
 class IsPlatformAdmin(IsAuthenticated):
@@ -137,7 +138,7 @@ class PlatformStatsView(APIView):
                 "status": sub.status,
             })
 
-        return Response({
+        return api_success(data={
             "users": {
                 "total": total_users,
                 "active": active_users,
@@ -163,7 +164,7 @@ class PlatformStatsView(APIView):
                 "total": total_orders,
             },
             "plan_distribution": plan_distribution,
-        })
+        }, message="Dashboard stats")
 
 
 class AdminUserListView(generics.ListCreateAPIView):

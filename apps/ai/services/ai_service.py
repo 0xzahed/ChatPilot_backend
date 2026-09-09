@@ -245,8 +245,13 @@ class AIService:
         self._update_usage("ai_replies")
 
         # Broadcast
-        from apps.inbox.consumers import broadcast_new_message
+        from apps.inbox.consumers import broadcast_new_message, broadcast_workspace_event, broadcast_conversation_update
         broadcast_new_message(ai_message)
+        broadcast_conversation_update(conversation)
+        broadcast_workspace_event(
+            str(self.workspace.id), "new_message",
+            {"conversation_id": str(conversation.id), "channel": conversation.channel},
+        )
 
         return {"sent": True, "message_id": str(ai_message.id), "suggestion": result["suggestion"]}
 

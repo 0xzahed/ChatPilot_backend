@@ -6,6 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from apps.integrations.models import WebhookEvent
 from apps.integrations.whatsapp.client import get_whatsapp_provider
+from common.api_response import api_error, api_success, api_paginated
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class WhatsAppWebhookView(View):
         try:
             payload = json.loads(request.body)
         except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
+            return JsonResponse({"success": False, "message": "Invalid JSON", "code": "BAD_REQUEST"}, status=400)
 
         webhook_event = WebhookEvent.objects.create(
             source="whatsapp",

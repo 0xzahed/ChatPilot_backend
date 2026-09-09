@@ -3,7 +3,7 @@ from .views import (
     IntegrationListView, IntegrationDetailView, IntegrationConnectView,
     IntegrationCallbackView, IntegrationCompleteView, IntegrationDisconnectView,
     WebhookEventListView, WebhookReplayView, SyncLogListView, IntegrationSyncView,
-    WhatsAppSetupView,
+    WhatsAppSetupView, IntegrationSelectPagesView,
 )
 
 urlpatterns = [
@@ -11,6 +11,7 @@ urlpatterns = [
     path("<uuid:pk>/", IntegrationDetailView.as_view(), name="integration-detail"),
     path("<uuid:pk>/disconnect/", IntegrationDisconnectView.as_view(), name="integration-disconnect"),
     path("<uuid:pk>/sync/", IntegrationSyncView.as_view(), name="integration-sync"),
+    path("<uuid:pk>/select-pages/", IntegrationSelectPagesView.as_view(), name="integration-select-pages"),
     path("connect/<str:integration_type>/", IntegrationConnectView.as_view(), name="integration-connect"),
     path("callback/<str:integration_type>/", IntegrationCallbackView.as_view(), name="integration-callback"),
     path("complete/<str:integration_type>/", IntegrationCompleteView.as_view(), name="integration-complete"),

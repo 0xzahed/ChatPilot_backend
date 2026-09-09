@@ -6,6 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from apps.integrations.models import WebhookEvent, Integration
 from apps.integrations.facebook.client import get_facebook_provider
+from common.api_response import api_error, api_success, api_paginated
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class FacebookWebhookView(View):
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
+            return JsonResponse({"success": False, "message": "Invalid JSON", "code": "BAD_REQUEST"}, status=400)
 
         integration = _get_facebook_integration()
 
@@ -124,6 +125,10 @@ def _process_webhook_sync(webhook_event, integration, source):
                     customer.save(update_fields=["name"])
                     customer_channel.display_name = incoming.sender_name
                     customer_channel.save(update_fields=["display_name"])
+                # Update profile pic if we have it
+                if incoming.sender_pic and not customer_channel.profile_url:
+                    customer_channel.profile_url = incoming.sender_pic
+                    customer_channel.save(update_fields=["profile_url"])
             else:
                 if not workspace:
                     workspace = integration.workspace if integration else None
@@ -138,6 +143,7 @@ def _process_webhook_sync(webhook_event, integration, source):
                     channel=incoming.channel,
                     external_id=incoming.sender_external_id,
                     display_name=incoming.sender_name,
+                    profile_url=incoming.sender_pic,
                 )
 
             # Find or create conversation
@@ -152,6 +158,11 @@ def _process_webhook_sync(webhook_event, integration, source):
                     channel=incoming.channel,
                     external_id=incoming.external_id,
                 )
+
+            # Save page_id in conversation config for replies
+            if incoming.page_id:
+                conversation.config["page_id"] = incoming.page_id
+                conversation.save(update_fields=["config"])
 
             # Skip duplicate messages
             if incoming.external_id and Message.objects.filter(external_id=incoming.external_id).exists():
@@ -207,7 +218,7 @@ def _process_webhook_sync(webhook_event, integration, source):
 
 
 def _enrich_sender_names(provider, messages):
-    """Fetch sender names from Facebook Graph API."""
+    """Fetch sender names and profile pictures from Facebook Graph API."""
     import httpx
     from apps.integrations.models import Integration
 
@@ -218,30 +229,34 @@ def _enrich_sender_names(provider, messages):
         return
 
     creds = integration.get_credentials()
-    page_token = creds.get("page_access_token", "")
+    pages = creds.get("pages", [])
+    page_token = pages[0].get("page_access_token", "") if pages else creds.get("page_access_token", "")
     if not page_token:
         return
 
     # Collect unique sender IDs
     sender_ids = set()
     for msg in messages:
-        if not msg.sender_name and msg.sender_external_id:
+        if msg.sender_external_id:
             sender_ids.add(msg.sender_external_id)
 
-    # Fetch names in batch
+    # Fetch names + profile pics in batch
     with httpx.Client(timeout=10) as client:
         for sid in sender_ids:
             try:
                 resp = client.get(
                     f"https://graph.facebook.com/v20.0/{sid}",
-                    params={"access_token": page_token, "fields": "name,first_name,last_name"},
+                    params={"access_token": page_token, "fields": "name,first_name,last_name,picture{url}"},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
                     name = data.get("name", "")
-                    if name:
-                        for msg in messages:
-                            if msg.sender_external_id == sid:
+                    pic_url = data.get("picture", {}).get("data", {}).get("url", "")
+                    for msg in messages:
+                        if msg.sender_external_id == sid:
+                            if name:
                                 msg.sender_name = name
+                            if pic_url:
+                                msg.sender_pic = pic_url
             except Exception as e:
                 logger.warning(f"Failed to fetch name for sender {sid}: {e}")

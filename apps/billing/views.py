@@ -7,6 +7,7 @@ from datetime import timedelta
 from .models import Plan, Subscription, Invoice, UsageRecord
 from .serializers import PlanSerializer, SubscriptionSerializer, InvoiceSerializer, UsageRecordSerializer
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class PlanListView(generics.ListAPIView):
@@ -21,20 +22,20 @@ class SubscriptionView(APIView):
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
         if str(workspace_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=403)
+            return api_error("Invalid workspace.", code="FORBIDDEN", status_code=403)
         sub = Subscription.objects.filter(workspace_id=workspace_id).first()
         if not sub:
-            return Response({"detail": "No subscription found."})
+            return api_success(message="No subscription found")
         return Response(SubscriptionSerializer(sub).data)
 
     def post(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
         if str(workspace_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=403)
+            return api_error("Invalid workspace.", code="FORBIDDEN", status_code=403)
         plan_id = request.data.get("plan_id")
         plan = Plan.objects.filter(id=plan_id, is_active=True).first()
         if not plan:
-            return Response({"error": "Plan not found."}, status=404)
+            return api_error("Plan not found.", code="NOT_FOUND", status_code=404)
         sub, created = Subscription.objects.update_or_create(
             workspace_id=workspace_id,
             defaults={
@@ -63,6 +64,6 @@ class UsageView(APIView):
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
         if str(workspace_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=403)
+            return api_error("Invalid workspace.", code="FORBIDDEN", status_code=403)
         records = UsageRecord.objects.filter(workspace_id=workspace_id).order_by("-period_start")[:12]
         return Response(UsageRecordSerializer(records, many=True).data)

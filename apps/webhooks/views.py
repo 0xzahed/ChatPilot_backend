@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from apps.integrations.models import WebhookEvent
 from apps.integrations.serializers import WebhookEventSerializer
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class WebhookEventListView(generics.ListAPIView):
@@ -38,7 +39,7 @@ class WebhookReplayView(APIView):
     def post(self, request, event_id):
         event = WebhookEvent.objects.filter(id=event_id).first()
         if not event:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         from apps.integrations.tasks import process_incoming_messages
         process_incoming_messages.delay(str(event.id), event.source)
-        return Response({"status": "replaying"})
+        return api_success(message="Replaying")

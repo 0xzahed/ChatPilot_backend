@@ -12,6 +12,7 @@ from apps.workspaces.models import Workspace
 from apps.customers.models import Customer, CustomerChannel
 from apps.inbox.models import Conversation, Message
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class WebchatConfigView(APIView):
@@ -22,8 +23,8 @@ class WebchatConfigView(APIView):
     def get(self, request, workspace_id):
         config = WebchatConfig.objects.filter(workspace_id=workspace_id, is_enabled=True).first()
         if not config:
-            return Response({"error": "Webchat not available."}, status=404)
-        return Response({
+            return api_error("Webchat not available.", code="NOT_FOUND", status_code=404)
+        return api_success(data={
             "title": config.title,
             "welcome_message": config.welcome_message,
             "offline_message": config.offline_message,
@@ -31,7 +32,7 @@ class WebchatConfigView(APIView):
             "position": config.position,
             "logo_url": config.logo_url,
             "workspace_id": str(config.workspace_id),
-        })
+        }, message="Config fetched")
 
 
 class WebchatInitSessionView(APIView):
@@ -42,7 +43,7 @@ class WebchatInitSessionView(APIView):
     def post(self, request, workspace_id):
         config = WebchatConfig.objects.filter(workspace_id=workspace_id, is_enabled=True).first()
         if not config:
-            return Response({"error": "Webchat not available."}, status=404)
+            return api_error("Webchat not available.", code="NOT_FOUND", status_code=404)
 
         session_token = secrets.token_urlsafe(32)
         session = WebchatSession.objects.create(
@@ -93,11 +94,11 @@ class WebchatInitSessionView(APIView):
             status="sent",
         )
 
-        return Response({
+        return api_success(data={
             "session_token": session_token,
             "conversation_id": str(conversation.id),
             "welcome_message": config.welcome_message,
-        })
+        }, message="Session created")
 
 
 class WebchatSendMessageView(APIView):
@@ -109,17 +110,17 @@ class WebchatSendMessageView(APIView):
         session_token = request.data.get("session_token")
         content = request.data.get("content", "")
         if not session_token or not content:
-            return Response({"error": "session_token and content are required."}, status=400)
+            return api_error("session_token and content are required.", code="BAD_REQUEST", status_code=400)
 
         session = WebchatSession.objects.filter(session_token=session_token).first()
         if not session:
-            return Response({"error": "Invalid session."}, status=404)
+            return api_error("Invalid session.", code="NOT_FOUND", status_code=404)
 
         conversation = Conversation.objects.filter(
             workspace=session.workspace, external_id=session_token
         ).first()
         if not conversation:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
 
         message = Message.objects.create(
             conversation=conversation,
@@ -147,7 +148,7 @@ class WebchatSendMessageView(APIView):
         from apps.integrations.website.services import trigger_ai_reply
         trigger_ai_reply.delay(conversation.id, message.id)
 
-        return Response({"message_id": str(message.id), "status": "sent"})
+        return api_success(data={"message_id": str(message.id), "status": "sent"}, message="Message sent")
 
 
 class WebchatMessagesView(APIView):
@@ -159,13 +160,13 @@ class WebchatMessagesView(APIView):
         session_token = request.query_params.get("session_token")
         session = WebchatSession.objects.filter(session_token=session_token).first()
         if not session:
-            return Response({"error": "Invalid session."}, status=404)
+            return api_error("Invalid session.", code="NOT_FOUND", status_code=404)
 
         conversation = Conversation.objects.filter(
             workspace=session.workspace, external_id=session_token
         ).first()
         if not conversation:
-            return Response({"error": "Conversation not found."}, status=404)
+            return api_error("Conversation not found.", code="NOT_FOUND", status_code=404)
 
         messages = conversation.messages.filter(
             sender_type__in=["system", "ai", "agent"]

@@ -7,8 +7,15 @@ import logging
 from .models import Integration, WebhookEvent, SyncLog
 from .serializers import IntegrationSerializer, WebhookEventSerializer, SyncLogSerializer
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 logger = logging.getLogger(__name__)
+
+
+def get_integration_for_user(user, pk):
+    """Fetch an integration only if the user is a member of its workspace."""
+    ws_ids = get_user_workspaces(user)
+    return Integration.objects.filter(id=pk, workspace_id__in=ws_ids).first()
 
 
 class IntegrationListView(generics.ListCreateAPIView):
@@ -23,7 +30,7 @@ class IntegrationListView(generics.ListCreateAPIView):
         ws_id = request.data.get("workspace_id")
         ws_ids = get_user_workspaces(request.user)
         if str(ws_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
         integration_type = request.data.get("integration_type")
         integration, created = Integration.objects.get_or_create(
             workspace_id=ws_id, integration_type=integration_type,
@@ -50,7 +57,7 @@ class IntegrationConnectView(APIView):
         ws_id = request.query_params.get("workspace_id")
         ws_ids = get_user_workspaces(request.user)
         if str(ws_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
 
         integration, _ = Integration.objects.get_or_create(
             workspace_id=ws_id, integration_type=integration_type,
@@ -69,11 +76,11 @@ class IntegrationConnectView(APIView):
             provider = get_instagram_provider(integration)
         elif integration_type == "whatsapp":
             # WhatsApp Cloud API doesn't use OAuth — needs manual setup
-            return Response({
+            return api_success(data={
                 "requires_manual_setup": True,
                 "setup_url": "/api/integrations/whatsapp/setup/",
                 "message": "WhatsApp Cloud API requires manual credentials setup.",
-            })
+        }, message="Manual setup required")
         elif integration_type == "shopify":
             from .shopify.client import get_shopify_provider
             provider = get_shopify_provider(integration)
@@ -85,15 +92,15 @@ class IntegrationConnectView(APIView):
             integration.status = "connected"
             integration.is_active = True
             integration.save(update_fields=["status", "is_active"])
-            return Response({
+            return api_success(data={
                 "status": "connected",
                 "integration": IntegrationSerializer(integration).data,
-            })
+        }, message="Integration connected")
         else:
-            return Response({"error": "Unknown integration type."}, status=400)
+            return api_error("Unknown integration type.", code="BAD_REQUEST", status_code=400)
 
         auth_url = provider.get_auth_url(redirect_uri, state)
-        return Response({"auth_url": auth_url, "mock": not provider.is_configured()})
+        return api_success(data={"auth_url": auth_url, "mock": not provider.is_configured()}, message="Auth URL generated")
 
 
 class IntegrationCallbackView(APIView):
@@ -133,7 +140,7 @@ class IntegrationCompleteView(APIView):
         state = request.data.get("state", "")
         integration = Integration.objects.filter(id=state).first()
         if not integration:
-            return Response({"error": "Invalid state."}, status=400)
+            return api_error("Invalid state.", code="BAD_REQUEST", status_code=400)
 
         from django.conf import settings
         redirect_uri = f"{settings.FRONTEND_URL}/api/integrations/callback/{integration_type}/"
@@ -154,34 +161,94 @@ class IntegrationCompleteView(APIView):
             from .woocommerce.client import get_woocommerce_provider
             provider = get_woocommerce_provider(integration)
         else:
-            return Response({"error": "Unknown integration type."}, status=400)
+            return api_error("Unknown integration type.", code="BAD_REQUEST", status_code=400)
 
         try:
             credentials = provider.handle_oauth_callback(code, redirect_uri)
-            if credentials:
+            if not credentials:
+                return api_error("Failed to connect — no credentials returned.", code="BAD_REQUEST", status_code=400)
+
+            # Facebook: return available pages for user selection (multi-page flow)
+            if integration_type == "facebook" and "available_pages" in credentials:
+                # Save user token + available pages temporarily (not connected yet)
                 integration.set_credentials(credentials)
-                integration.status = "connected"
-                integration.is_active = True
-                integration.save(update_fields=["credentials_encrypted", "status", "is_active"])
-                return Response({"status": "connected", "integration": IntegrationSerializer(integration).data})
-            return Response({"error": "Failed to connect — no credentials returned."}, status=400)
+                integration.status = "pending"
+                integration.config["available_pages"] = credentials["available_pages"]
+                integration.save(update_fields=["credentials_encrypted", "status", "config"])
+                return api_success(data={
+                    "status": "pending",
+                    "requires_page_selection": True,
+                    "available_pages": credentials["available_pages"],
+                    "integration_id": str(integration.id),
+        }, message="Page selection required")
+
+            # Other integrations: auto-connect as before
+            integration.set_credentials(credentials)
+            integration.status = "connected"
+            integration.is_active = True
+            integration.save(update_fields=["credentials_encrypted", "status", "is_active"])
+            return api_success(data={"status": "connected", "integration": IntegrationSerializer(integration).data}, message="Integration connected")
         except Exception as e:
             logger.error(f"Integration complete error: {e}")
-            return Response({"error": str(e)}, status=400)
+            return api_error(str(e), code="BAD_REQUEST", status_code=400)
+
+
+class IntegrationSelectPagesView(APIView):
+    """Connect selected Facebook Pages after OAuth page selection.
+
+    Called by frontend after user selects which pages to connect.
+    Saves page access tokens and marks the integration as connected.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        integration = get_integration_for_user(request.user, pk)
+        if not integration:
+            return api_error("Integration not found.", code="NOT_FOUND", status_code=404)
+        if integration.integration_type != "facebook":
+            return api_error("Page selection only supported for Facebook.", code="BAD_REQUEST", status_code=400)
+
+        selected_page_ids = request.data.get("page_ids", [])
+        if not selected_page_ids:
+            return api_error("No pages selected.", code="BAD_REQUEST", status_code=400)
+
+        available_pages = integration.config.get("available_pages", [])
+        selected_pages = [p for p in available_pages if p.get("page_id") in selected_page_ids]
+
+        if not selected_pages:
+            return api_error("Selected pages not found in available pages.", code="BAD_REQUEST", status_code=400)
+
+        # Save user token + selected pages in credentials
+        creds = integration.get_credentials()
+        creds["pages"] = selected_pages
+        integration.set_credentials(creds)
+        integration.status = "connected"
+        integration.is_active = True
+        # Store page names in config for display
+        integration.config["connected_pages"] = [
+            {"page_id": p["page_id"], "page_name": p["page_name"]} for p in selected_pages
+        ]
+        integration.save(update_fields=["credentials_encrypted", "status", "is_active", "config"])
+        return api_success(data={
+            "status": "connected",
+            "integration": IntegrationSerializer(integration).data,
+            "connected_pages": integration.config["connected_pages"],
+        }, message="Integration connected")
 
 
 class IntegrationDisconnectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        integration = Integration.objects.filter(id=pk).first()
+        integration = get_integration_for_user(request.user, pk)
         if not integration:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         integration.status = "disconnected"
         integration.is_active = False
         integration.credentials_encrypted = ""
         integration.save(update_fields=["status", "is_active", "credentials_encrypted"])
-        return Response({"status": "disconnected"})
+        return api_success(data={"status": "disconnected"}, message="Disconnected")
 
 
 class WebhookEventListView(generics.ListAPIView):
@@ -201,12 +268,13 @@ class WebhookReplayView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, event_id):
-        event = WebhookEvent.objects.filter(id=event_id).first()
+        ws_ids = get_user_workspaces(request.user)
+        event = WebhookEvent.objects.filter(id=event_id, workspace_id__in=ws_ids).first()
         if not event:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         from apps.integrations.tasks import process_incoming_messages
         process_incoming_messages.delay(str(event.id), event.source)
-        return Response({"status": "replaying"})
+        return api_success(data={"status": "replaying"}, message="Replaying")
 
 
 class SyncLogListView(generics.ListAPIView):
@@ -224,9 +292,9 @@ class IntegrationSyncView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request, pk):
-        integration = Integration.objects.filter(id=pk).first()
+        integration = get_integration_for_user(request.user, pk)
         if not integration:
-            return Response({"error": "Not found."}, status=404)
+            return api_error("Not found.", code="NOT_FOUND", status_code=404)
         if integration.integration_type == "shopify":
             from apps.integrations.shopify.tasks import sync_shopify_products
             sync_shopify_products.delay(str(integration.id))
@@ -235,7 +303,7 @@ class IntegrationSyncView(APIView):
             sync_woocommerce_products.delay(str(integration.id))
         elif integration.integration_type == "facebook":
             return _sync_facebook_historical(integration)
-        return Response({"status": "syncing"})
+        return api_success(data={"status": "syncing"}, message="Sync started")
 
 
 def _sync_facebook_historical(integration):
@@ -247,11 +315,11 @@ def _sync_facebook_historical(integration):
 
     provider = get_facebook_provider(integration)
     if not hasattr(provider, "fetch_historical_conversations"):
-        return Response({"error": "Historical sync not supported."}, status=400)
+        return api_error("Historical sync not supported.", code="BAD_REQUEST", status_code=400)
 
     threads = provider.fetch_historical_conversations()
     if not threads:
-        return Response({"status": "completed", "synced": 0, "message": "No conversations found on Facebook Page."})
+        return api_success(data={"status": "completed", "synced": 0}, message="No conversations found on Facebook Page")
 
     workspace = integration.workspace
     page_id = integration.get_credentials().get("page_id", "")
@@ -261,11 +329,16 @@ def _sync_facebook_historical(integration):
     for thread in threads:
         sender_id = thread["sender_id"]
         sender_name = thread["sender_name"]
+        sender_pic = thread.get("sender_pic", "")
+        thread_page_id = thread.get("page_id", "")
 
         # Find or create customer
         channel = CustomerChannel.objects.filter(channel="facebook", external_id=sender_id).first()
         if channel:
             customer = channel.customer
+            if sender_pic and not channel.profile_url:
+                channel.profile_url = sender_pic
+                channel.save(update_fields=["profile_url"])
         else:
             customer = Customer.objects.create(
                 workspace=workspace,
@@ -276,6 +349,7 @@ def _sync_facebook_historical(integration):
                 channel="facebook",
                 external_id=sender_id,
                 display_name=sender_name,
+                profile_url=sender_pic,
             )
 
         # Find or create conversation
@@ -293,6 +367,11 @@ def _sync_facebook_historical(integration):
                 last_message_preview=thread.get("snippet", "")[:200],
             )
             synced_convs += 1
+
+        # Save page_id in conversation config for replies
+        if thread_page_id:
+            conv.config["page_id"] = thread_page_id
+            conv.save(update_fields=["config"])
 
         # Save messages
         for m in thread.get("messages", []):
@@ -347,12 +426,12 @@ def _sync_facebook_historical(integration):
     integration.last_synced_at = timezone.now()
     integration.save(update_fields=["last_synced_at"])
 
-    return Response({
+    return api_success(data={
         "status": "completed",
         "synced_conversations": synced_convs,
         "synced_messages": synced_msgs,
         "total_threads": len(threads),
-    })
+        }, message="Success")
 
 
 class WhatsAppSetupView(APIView):
@@ -367,13 +446,13 @@ class WhatsAppSetupView(APIView):
         ws_id = request.data.get("workspace_id")
         ws_ids = get_user_workspaces(request.user)
         if str(ws_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=400)
+            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
 
         access_token = request.data.get("access_token", "").strip()
         phone_number_id = request.data.get("phone_number_id", "").strip()
 
         if not access_token or not phone_number_id:
-            return Response({
+            return api_success(data={
                 "error": "access_token and phone_number_id are required."
             }, status=400)
 
@@ -390,7 +469,7 @@ class WhatsAppSetupView(APIView):
         integration.is_active = True
         integration.save(update_fields=["credentials_encrypted", "status", "is_active"])
 
-        return Response({
+        return api_success(data={
             "status": "connected",
             "integration": IntegrationSerializer(integration).data,
-        })
+        }, message="Integration connected")

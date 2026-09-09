@@ -50,4 +50,8 @@ class CustomerTimelineView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return CustomerTimelineEvent.objects.filter(customer_id=self.kwargs["pk"])
+        ws_ids = get_user_workspaces(self.request.user)
+        return CustomerTimelineEvent.objects.filter(
+            customer_id=self.kwargs["pk"],
+            customer__workspace_id__in=ws_ids,
+        )

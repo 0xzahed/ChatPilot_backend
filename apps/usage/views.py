@@ -7,6 +7,7 @@ from datetime import timedelta
 from apps.ai.models import AIUsage
 from apps.billing.models import Subscription
 from apps.inbox.views import get_user_workspaces
+from common.api_response import api_error, api_success, api_paginated
 
 
 class UsageSummaryView(APIView):
@@ -15,7 +16,7 @@ class UsageSummaryView(APIView):
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
         if str(workspace_id) not in ws_ids:
-            return Response({"error": "Invalid workspace."}, status=403)
+            return api_error("Invalid workspace.", code="FORBIDDEN", status_code=403)
 
         today = timezone.now().date()
         month_start = today.replace(day=1)
@@ -39,7 +40,7 @@ class UsageSummaryView(APIView):
         from apps.workspaces.models import WorkspaceMembership
         team_members = WorkspaceMembership.objects.filter(workspace_id=workspace_id).count()
 
-        return Response({
+        return api_success(data={
             "messages_used": messages_used,
             "message_limit": message_limit,
             "messages_remaining": max(message_limit - messages_used, 0),
@@ -54,4 +55,4 @@ class UsageSummaryView(APIView):
             "team_member_limit": team_member_limit,
             "period_start": month_start.isoformat(),
             "period_end": today.isoformat(),
-        })
+        }, message="Usage stats")

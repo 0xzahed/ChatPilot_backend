@@ -60,10 +60,20 @@ class ProductVariantListView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return ProductVariant.objects.filter(product_id=self.kwargs["product_id"])
+        ws_ids = get_user_workspaces(self.request.user)
+        return ProductVariant.objects.filter(
+            product_id=self.kwargs["product_id"],
+            product__workspace_id__in=ws_ids,
+        )
 
     def perform_create(self, serializer):
-        product = Product.objects.get(id=self.kwargs["product_id"])
+        ws_ids = get_user_workspaces(self.request.user)
+        product = Product.objects.filter(
+            id=self.kwargs["product_id"], workspace_id__in=ws_ids
+        ).first()
+        if not product:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Product not found.")
         serializer.save(product=product)
 
 
@@ -72,10 +82,20 @@ class ProductImageViewList(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return ProductImage.objects.filter(product_id=self.kwargs["product_id"])
+        ws_ids = get_user_workspaces(self.request.user)
+        return ProductImage.objects.filter(
+            product_id=self.kwargs["product_id"],
+            product__workspace_id__in=ws_ids,
+        )
 
     def perform_create(self, serializer):
-        product = Product.objects.get(id=self.kwargs["product_id"])
+        ws_ids = get_user_workspaces(self.request.user)
+        product = Product.objects.filter(
+            id=self.kwargs["product_id"], workspace_id__in=ws_ids
+        ).first()
+        if not product:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Product not found.")
         serializer.save(product=product)
 
 

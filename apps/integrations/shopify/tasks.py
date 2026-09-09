@@ -48,3 +48,17 @@ def sync_shopify_products(integration_id):
     )
     integration.last_synced_at = timezone.now()
     integration.save(update_fields=["last_synced_at"])
+
+
+@shared_task
+def sync_shopify_webhook(webhook_event_id):
+    """Process a Shopify webhook event. Currently logs the event; extend as needed."""
+    from apps.integrations.models import WebhookEvent
+
+    webhook_event = WebhookEvent.objects.filter(id=webhook_event_id).first()
+    if not webhook_event:
+        return
+
+    webhook_event.status = "processed"
+    webhook_event.processed_at = timezone.now()
+    webhook_event.save(update_fields=["status", "processed_at"])

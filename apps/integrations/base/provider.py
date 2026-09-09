@@ -21,6 +21,8 @@ class IncomingMessage:
     message_type: str = "text"  # text, image, file, audio
     attachment_url: str = ""
     timestamp: str = ""
+    page_id: str = ""  # For multi-page integrations (e.g. Facebook)
+    sender_pic: str = ""  # Profile picture URL
     raw_payload: dict = field(default_factory=dict)
 
 
