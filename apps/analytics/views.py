@@ -55,14 +55,25 @@ class DashboardView(APIView):
         # Conversion rate
         conversion_rate = (total_orders / total_conversations * 100) if total_conversations > 0 else 0
 
-        # Average response time (simplified — time between first customer message and first agent/AI reply)
+        # Average response time — single query instead of N+1 loop
+        from django.db.models import Min, F, ExpressionWrapper, DurationField
+        convs_with_msgs = conversations.filter(status="open").annotate(
+            first_customer=Min(
+                "messages__created_at",
+                filter=Q(messages__sender_type="customer"),
+            ),
+            first_reply=Min(
+                "messages__created_at",
+                filter=Q(messages__sender_type__in=["ai", "agent"]),
+            ),
+        ).exclude(first_customer__isnull=True).exclude(first_reply__isnull=True)[:100]
+
         response_times = []
-        for conv in conversations.filter(status="open")[:100]:
-            first_customer_msg = conv.messages.filter(sender_type="customer").order_by("created_at").first()
-            first_reply = conv.messages.filter(sender_type__in=["ai", "agent"]).order_by("created_at").first()
-            if first_customer_msg and first_reply:
-                delta = (first_reply.created_at - first_customer_msg.created_at).total_seconds()
-                response_times.append(delta)
+        for conv in convs_with_msgs:
+            if conv.first_customer and conv.first_reply:
+                delta = (conv.first_reply - conv.first_customer).total_seconds()
+                if delta >= 0:
+                    response_times.append(delta)
         avg_response_time = sum(response_times) / len(response_times) if response_times else 0
 
         # Messages used (this month)

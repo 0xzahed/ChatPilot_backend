@@ -15,6 +15,12 @@ class WorkspaceSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "slug", "logo", "is_active", "created_at", "updated_at"]
         read_only_fields = ["id", "is_active", "created_at", "updated_at"]
 
+    def validate_logo(self, value):
+        from common.utils import validate_image_upload
+        if value:
+            validate_image_upload(value)
+        return value
+
 
 class WorkspaceMembershipSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source="user.email", read_only=True)

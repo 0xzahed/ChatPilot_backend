@@ -21,16 +21,37 @@ from .serializers import (
 )
 
 
+def _create_session(request, user, refresh):
+    """Persist a Session row tracking the issued refresh token (JTI)."""
+    try:
+        jti = refresh["jti"]
+        Session.objects.update_or_create(
+            refresh_token_jti=jti,
+            defaults={
+                "user": user,
+                "device_name": request.data.get("device_name", ""),
+                "device_type": request.data.get("device_type", ""),
+                "ip_address": request.META.get("REMOTE_ADDR"),
+                "user_agent": request.META.get("HTTP_USER_AGENT", "")[:1000],
+                "expires_at": timezone.now() + timedelta(days=7),
+            },
+        )
+    except Exception:
+        pass
+
+
 class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [AllowAny]
+    throttle_scope = "auth"
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
+        _create_session(request, user, refresh)
         return api_success(
             data={
                 "user": UserSerializer(user).data,
@@ -45,6 +66,7 @@ class RegisterView(generics.CreateAPIView):
 class LoginView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
     permission_classes = [AllowAny]
+    throttle_scope = "auth"
 
     def post(self, request, *args, **kwargs):
         response = super().post(request, *args, **kwargs)
@@ -54,7 +76,13 @@ class LoginView(TokenObtainPairView):
             if user:
                 user.last_active_at = timezone.now()
                 user.save(update_fields=["last_active_at"])
-            # Wrap in standard envelope
+            # Wrap in standard envelope and track session
+            try:
+                refresh = RefreshToken(response.data.get("refresh"))
+                if user:
+                    _create_session(request, user, refresh)
+            except Exception:
+                pass
             return api_success(data=response.data, message="Login successful")
         return response
 
@@ -102,6 +130,7 @@ class ChangePasswordView(APIView):
 
 class ForgotPasswordView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth"
 
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
@@ -128,6 +157,7 @@ class ForgotPasswordView(APIView):
 
 class ResetPasswordView(APIView):
     permission_classes = [AllowAny]
+    throttle_scope = "auth"
 
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)
@@ -148,8 +178,11 @@ class ResetPasswordView(APIView):
 class SessionListView(generics.ListAPIView):
     serializer_class = SessionSerializer
     permission_classes = [IsAuthenticated]
+    queryset = Session.objects.none()
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         return self.request.user.sessions.all()
 
 

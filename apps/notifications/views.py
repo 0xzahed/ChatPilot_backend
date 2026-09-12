@@ -6,6 +6,7 @@ from django.db.models import Q
 from .models import Notification
 from apps.inbox.views import get_user_workspaces
 from common.api_response import api_error, api_success, api_paginated
+from apps.notifications.models import Notification
 
 
 class NotificationSer(serializers.ModelSerializer):
@@ -15,10 +16,13 @@ class NotificationSer(serializers.ModelSerializer):
 
 
 class NotificationListView(generics.ListAPIView):
+    queryset = Notification.objects.none()
     serializer_class = NotificationSer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         qs = Notification.objects.filter(
             Q(workspace_id__in=ws_ids) | Q(user=self.request.user)

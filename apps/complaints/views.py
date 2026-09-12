@@ -4,13 +4,17 @@ from django.db.models import Q
 from .models import Complaint
 from .serializers import ComplaintSerializer
 from apps.inbox.views import get_user_workspaces
+from apps.complaints.models import Complaint
 
 
 class ComplaintListView(generics.ListCreateAPIView):
+    queryset = Complaint.objects.none()
     serializer_class = ComplaintSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         qs = Complaint.objects.filter(workspace_id__in=ws_ids).select_related("customer", "assigned_to")
 
@@ -45,5 +49,7 @@ class ComplaintDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Complaint.objects.filter(workspace_id__in=ws_ids)

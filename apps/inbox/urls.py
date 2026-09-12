@@ -4,11 +4,12 @@ from .views import (
     SendMessageView, AssignConversationView, CloseConversationView,
     ReopenConversationView, MarkUnreadView, AISuggestView,
     ConversationLabelsView, LabelListCreateView, LabelDetailView,
-    TypingIndicatorView,
+    TypingIndicatorView, FacebookPagesView,
 )
 
 urlpatterns = [
     path("", ConversationListView.as_view(), name="conversation-list"),
+    path("facebook-pages/", FacebookPagesView.as_view(), name="facebook-pages"),
     path("<uuid:conversation_id>/", ConversationDetailView.as_view(), name="conversation-detail"),
     path("<uuid:conversation_id>/messages/", MessageListView.as_view(), name="message-list"),
     path("<uuid:conversation_id>/messages/send/", SendMessageView.as_view(), name="send-message"),

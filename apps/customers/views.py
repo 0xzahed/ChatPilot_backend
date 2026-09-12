@@ -1,12 +1,15 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q
+from django.db.models import Q, Count
 from .models import Customer, CustomerTimelineEvent
 from .serializers import CustomerSerializer, CustomerListSerializer, CustomerTimelineSerializer
 from apps.inbox.views import get_user_workspaces
+from apps.customers.models import Customer
+from apps.customers.models import CustomerTimelineEvent
 
 
 class CustomerListView(generics.ListCreateAPIView):
+    queryset = Customer.objects.none()
     permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
@@ -15,8 +18,12 @@ class CustomerListView(generics.ListCreateAPIView):
         return CustomerSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
-        qs = Customer.objects.filter(workspace_id__in=ws_ids)
+        qs = Customer.objects.filter(workspace_id__in=ws_ids).annotate(
+            conversation_count=Count("conversations"),
+        ).select_related("assigned_to").order_by("-created_at")
 
         search = self.request.query_params.get("search")
         if search:
@@ -41,15 +48,20 @@ class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Customer.objects.filter(workspace_id__in=ws_ids)
 
 
 class CustomerTimelineView(generics.ListAPIView):
+    queryset = CustomerTimelineEvent.objects.none()
     serializer_class = CustomerTimelineSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return CustomerTimelineEvent.objects.filter(
             customer_id=self.kwargs["pk"],

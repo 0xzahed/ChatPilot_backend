@@ -171,8 +171,11 @@ class AdminUserListView(generics.ListCreateAPIView):
     """List all platform users (with search/filter) or create a new user."""
     serializer_class = AdminUserSerializer
     permission_classes = [IsPlatformAdmin]
+    queryset = User.objects.none()
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         qs = User.objects.all().order_by("-date_joined")
         search = self.request.query_params.get("search")
         if search:
@@ -220,8 +223,11 @@ class AdminWorkspaceListView(generics.ListCreateAPIView):
     """List all workspaces (with search/filter)."""
     serializer_class = AdminWorkspaceSerializer
     permission_classes = [IsPlatformAdmin]
+    queryset = Workspace.objects.none()
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         qs = Workspace.objects.all().order_by("-created_at").select_related("owner")
         search = self.request.query_params.get("search")
         if search:
@@ -257,11 +263,14 @@ class AdminWorkspaceDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class AdminAuditLogListView(generics.ListAPIView):
+    queryset = AuditLog.objects.none()
     """List all audit logs across the platform."""
     serializer_class = AdminAuditLogSerializer
     permission_classes = [IsPlatformAdmin]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         qs = AuditLog.objects.all().select_related("user", "workspace").order_by("-created_at")
         search = self.request.query_params.get("search")
         if search:

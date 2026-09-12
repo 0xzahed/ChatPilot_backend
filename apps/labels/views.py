@@ -6,10 +6,13 @@ from apps.inbox.views import get_user_workspaces
 
 
 class LabelListView(generics.ListCreateAPIView):
+    queryset = Label.objects.none()
     serializer_class = LabelSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Label.objects.filter(workspace_id__in=ws_ids)
 
@@ -26,5 +29,7 @@ class LabelDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Label.objects.filter(workspace_id__in=ws_ids)

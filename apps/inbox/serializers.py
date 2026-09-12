@@ -16,6 +16,7 @@ class ConversationListSerializer(serializers.ModelSerializer):
     assigned_to_name = serializers.SerializerMethodField()
     labels = LabelSerializer(many=True, read_only=True)
     channel_icon = serializers.CharField(source="channel", read_only=True)
+    page_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -24,26 +25,42 @@ class ConversationListSerializer(serializers.ModelSerializer):
             "channel", "channel_icon", "status", "handled_by", "assigned_to",
             "assigned_to_name", "labels", "last_message_at", "last_message_preview",
             "unread_count", "is_complaint", "has_order", "ai_enabled", "language",
-            "created_at", "updated_at",
+            "page_name", "created_at", "updated_at",
         ]
 
     def get_customer_avatar(self, obj):
         # Check uploaded avatar first
         if obj.customer.avatar:
             return obj.customer.avatar.url
-        # Check channel profile_url (e.g. Facebook profile pic)
-        from apps.customers.models import CustomerChannel
-        channel = CustomerChannel.objects.filter(
-            customer=obj.customer, channel=obj.channel
-        ).first()
-        if channel and channel.profile_url:
-            return channel.profile_url
-        return None
+        # Use annotated value from queryset (avoids N+1)
+        return getattr(obj, "_channel_avatar", None) or None
 
     def get_assigned_to_name(self, obj):
         if obj.assigned_to:
             name = f"{obj.assigned_to.first_name} {obj.assigned_to.last_name}".strip()
             return name or obj.assigned_to.username
+        return None
+
+    def get_page_name(self, obj):
+        """Return the Facebook Page name for this conversation, if available."""
+        page_id = (obj.config or {}).get("page_id", "")
+        if not page_id:
+            return None
+        # Use cached page map from serializer context (avoids N+1)
+        page_map = self.context.get("_fb_page_map", {})
+        if page_map:
+            return page_map.get(page_id)
+        # Fallback: direct lookup
+        from apps.integrations.models import Integration
+        integrations = Integration.objects.filter(
+            workspace_id=obj.workspace_id,
+            integration_type="facebook",
+            status="connected",
+        )
+        for integration in integrations:
+            for page in (integration.config or {}).get("connected_pages", []):
+                if page.get("page_id") == page_id:
+                    return page.get("page_name")
         return None
 
 

@@ -11,7 +11,8 @@ class CategorySerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at"]
 
     def get_product_count(self, obj):
-        return obj.products.count()
+        # Use annotated value from queryset (avoids N+1)
+        return getattr(obj, "product_count", None) or obj.products.count()
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -62,6 +63,11 @@ class ProductListSerializer(serializers.ModelSerializer):
         ]
 
     def get_image_url(self, obj):
+        # Use annotated value from queryset (avoids N+1)
+        url = getattr(obj, "_first_image_url", None)
+        if url:
+            return url
+        # Fallback for non-list contexts
         first_image = obj.images.first()
         if first_image and first_image.image:
             return first_image.image.url

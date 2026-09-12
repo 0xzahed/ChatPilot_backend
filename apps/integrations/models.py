@@ -39,8 +39,10 @@ class Integration(models.Model):
 
     class Meta:
         db_table = "integrations"
-        unique_together = ["workspace", "integration_type"]
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["workspace", "integration_type", "status"]),
+        ]
 
     def set_credentials(self, credentials: dict):
         import json

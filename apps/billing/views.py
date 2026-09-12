@@ -8,6 +8,7 @@ from .models import Plan, Subscription, Invoice, UsageRecord
 from .serializers import PlanSerializer, SubscriptionSerializer, InvoiceSerializer, UsageRecordSerializer
 from apps.inbox.views import get_user_workspaces
 from common.api_response import api_error, api_success, api_paginated
+from apps.billing.models import Invoice
 
 
 class PlanListView(generics.ListAPIView):
@@ -50,10 +51,13 @@ class SubscriptionView(APIView):
 
 
 class InvoiceListView(generics.ListAPIView):
+    queryset = Invoice.objects.none()
     serializer_class = InvoiceSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Invoice.objects.filter(workspace_id__in=ws_ids)
 

@@ -157,6 +157,14 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "EXCEPTION_HANDLER": "api_response_toolkit.drf.exception_handler.api_exception_handler",
+    "DEFAULT_THROTTLE_CLASSES": (
+        "rest_framework.throttling.ScopedRateThrottle",
+    ),
+    "DEFAULT_THROTTLE_RATES": {
+        "auth": env("THROTTLE_AUTH", default="30/min"),
+        "webchat": env("THROTTLE_WEBCHAT", default="60/min"),
+        "webhook": env("THROTTLE_WEBHOOK", default="600/min"),
+    },
 }
 
 SIMPLE_JWT = {

@@ -8,8 +8,14 @@ from apps.inbox.views import get_user_workspaces
 from apps.inbox.models import Conversation, Message
 from apps.customers.models import Customer, CustomerChannel
 from django.utils import timezone
+from django.db import transaction
 import uuid
 from common.api_response import api_error, api_success, api_paginated
+
+
+def _webchat_config_or_404(workspace_id):
+    """Return an enabled WebchatConfig for the workspace or None."""
+    return WebchatConfig.objects.filter(workspace_id=workspace_id, is_enabled=True).first()
 
 
 class WebchatConfigView(generics.RetrieveUpdateAPIView):
@@ -20,7 +26,8 @@ class WebchatConfigView(generics.RetrieveUpdateAPIView):
         ws_id = self.kwargs.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
         if str(ws_id) not in ws_ids:
-            return None
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Invalid workspace.")
         config, _ = WebchatConfig.objects.get_or_create(workspace_id=ws_id)
         return config
 
@@ -28,11 +35,11 @@ class WebchatConfigView(generics.RetrieveUpdateAPIView):
 class WebchatPublicConfigView(APIView):
     """Public endpoint — returns webchat config for embedding on external websites."""
     permission_classes = [AllowAny]
+    throttle_scope = "webchat"
 
     def get(self, request, workspace_id):
-        try:
-            config = WebchatConfig.objects.get(workspace_id=workspace_id, is_enabled=True)
-        except WebchatConfig.DoesNotExist:
+        config = _webchat_config_or_404(workspace_id)
+        if not config:
             return api_error("Webchat not enabled", code="NOT_FOUND", status_code=404)
 
         return api_success(data={
@@ -48,13 +55,19 @@ class WebchatPublicConfigView(APIView):
 class WebchatSessionView(APIView):
     """Create or retrieve a webchat session for a website visitor."""
     permission_classes = [AllowAny]
+    throttle_scope = "webchat"
 
+    @transaction.atomic
     def post(self, request):
         workspace_id = request.data.get("workspace_id")
         session_token = request.data.get("session_token")
         visitor_name = request.data.get("visitor_name", "Anonymous")
         visitor_email = request.data.get("visitor_email", "")
         visitor_phone = request.data.get("visitor_phone", "")
+
+        # Validate the workspace has webchat enabled
+        if not workspace_id or not _webchat_config_or_404(workspace_id):
+            return api_error("Webchat not enabled for this workspace.", code="NOT_FOUND", status_code=404)
 
         # Check if session exists
         if session_token:
@@ -73,7 +86,7 @@ class WebchatSessionView(APIView):
                 return api_success(data={
                     "session_token": session.session_token,
                     "visitor_name": session.visitor_name,
-        }, message="Session created")
+                }, message="Session updated")
 
         # Create new session
         token = str(uuid.uuid4())
@@ -83,6 +96,8 @@ class WebchatSessionView(APIView):
             visitor_name=visitor_name,
             visitor_email=visitor_email,
             visitor_phone=visitor_phone,
+            ip_address=request.META.get("REMOTE_ADDR"),
+            user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
         )
         return api_success(data={
             "session_token": session.session_token,
@@ -93,7 +108,9 @@ class WebchatSessionView(APIView):
 class WebchatMessageView(APIView):
     """Receive a message from a website visitor and create a conversation."""
     permission_classes = [AllowAny]
+    throttle_scope = "webchat"
 
+    @transaction.atomic
     def post(self, request):
         workspace_id = request.data.get("workspace_id")
         session_token = request.data.get("session_token")
@@ -101,6 +118,12 @@ class WebchatMessageView(APIView):
 
         if not content:
             return api_error("Message content required.", code="BAD_REQUEST", status_code=400)
+        if len(content) > 5000:
+            return api_error("Message too long.", code="BAD_REQUEST", status_code=400)
+
+        # Validate webchat is enabled for the workspace
+        if not workspace_id or not _webchat_config_or_404(workspace_id):
+            return api_error("Webchat not enabled for this workspace.", code="NOT_FOUND", status_code=404)
 
         # Get or create session
         session = None
@@ -113,6 +136,8 @@ class WebchatMessageView(APIView):
                 workspace_id=workspace_id,
                 session_token=token,
                 visitor_name="Anonymous",
+                ip_address=request.META.get("REMOTE_ADDR"),
+                user_agent=request.META.get("HTTP_USER_AGENT", "")[:1000],
             )
 
         # Find or create customer
@@ -165,6 +190,9 @@ class WebchatMessageView(APIView):
         conv.last_message_preview = content[:100]
         conv.unread_count += 1
         conv.save(update_fields=["last_message_at", "last_message_preview", "unread_count"])
+
+        # Update session activity
+        session.save(update_fields=["last_active_at"])
 
         # Broadcast via WebSocket
         try:

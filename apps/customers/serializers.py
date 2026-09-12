@@ -59,7 +59,8 @@ class CustomerListSerializer(serializers.ModelSerializer):
         return None
 
     def get_conversation_count(self, obj):
-        return obj.conversations.count()
+        # Use annotated value from queryset (avoids N+1)
+        return getattr(obj, "conversation_count", None) or obj.conversations.count()
 
 
 class CustomerTimelineSerializer(serializers.ModelSerializer):

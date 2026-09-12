@@ -1,4 +1,5 @@
 from decimal import Decimal
+from django.db import transaction
 from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -10,9 +11,11 @@ from apps.products.models import Product
 from apps.customers.models import Customer
 from apps.inbox.views import get_user_workspaces
 from common.api_response import api_error, api_success, api_paginated
+from apps.orders.models import Order
 
 
 class OrderListView(generics.ListCreateAPIView):
+    queryset = Order.objects.none()
     permission_classes = [IsAuthenticated]
 
     def get_serializer_class(self):
@@ -21,6 +24,8 @@ class OrderListView(generics.ListCreateAPIView):
         return CreateOrderSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         qs = Order.objects.filter(workspace_id__in=ws_ids).select_related("customer")
 
@@ -42,13 +47,14 @@ class OrderListView(generics.ListCreateAPIView):
 
         return qs
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         ws_ids = get_user_workspaces(request.user)
-        if data["workspace_id"] not in ws_ids:
+        if str(data["workspace_id"]) not in ws_ids:
             return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
 
         customer = Customer.objects.filter(id=data["customer_id"], workspace_id=data["workspace_id"]).first()
@@ -81,9 +87,15 @@ class OrderListView(generics.ListCreateAPIView):
         delivery_charge = data.get("delivery_charge", Decimal("0"))
         total = subtotal - discount + delivery_charge
 
-        # Generate order number
-        import random
-        order_number = f"ORD-{random.randint(100000, 999999)}"
+        # Generate a unique order number (retry on collision)
+        import uuid as _uuid
+        order = None
+        for _ in range(5):
+            order_number = f"ORD-{_uuid.uuid4().hex[:10].upper()}"
+            if not Order.objects.filter(order_number=order_number).exists():
+                break
+        else:
+            return api_error("Could not generate a unique order number.", code="INTERNAL_ERROR", status_code=500)
 
         order = Order.objects.create(
             order_number=order_number,
@@ -122,5 +134,7 @@ class OrderDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Order.objects.filter(workspace_id__in=ws_ids)

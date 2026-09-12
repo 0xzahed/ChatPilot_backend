@@ -79,3 +79,9 @@ class UpdateProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
         fields = ["first_name", "last_name", "phone", "avatar"]
+
+    def validate_avatar(self, value):
+        from common.utils import validate_image_upload
+        if value:
+            validate_image_upload(value)
+        return value

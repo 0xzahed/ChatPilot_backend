@@ -1,4 +1,4 @@
-from django.db.models import Q, Count, Prefetch
+from django.db.models import Q, Count, Prefetch, Subquery, OuterRef, CharField
 from django.utils import timezone
 from rest_framework import generics, status, filters
 from rest_framework.views import APIView
@@ -8,6 +8,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 import logging
 
 from apps.workspaces.models import WorkspaceMembership
+from apps.customers.models import CustomerChannel
 from .models import Conversation, Message, MessageAttachment, Label, ConversationLabel
 from .serializers import (
     ConversationListSerializer, ConversationDetailSerializer,
@@ -18,6 +19,9 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 from apps.ai.services.ai_service import AIService
 from common.api_response import api_error, api_success, api_paginated
+from apps.inbox.models import Conversation
+from apps.inbox.models import Message
+from apps.inbox.models import Label
 
 
 def get_user_workspaces(user):
@@ -32,14 +36,43 @@ def get_conversation_for_user(user, conversation_id):
 
 
 class ConversationListView(generics.ListAPIView):
+    queryset = Conversation.objects.none()
     serializer_class = ConversationListSerializer
     permission_classes = [IsAuthenticated]
 
-    def get_queryset(self):
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        # Build a page_id → page_name map from all connected Facebook integrations
+        # to avoid N+1 queries when serializing page_name per conversation
         ws_ids = get_user_workspaces(self.request.user)
+        from apps.integrations.models import Integration
+        page_map = {}
+        for integration in Integration.objects.filter(
+            workspace_id__in=ws_ids,
+            integration_type="facebook",
+            status="connected",
+        ):
+            for page in (integration.config or {}).get("connected_pages", []):
+                page_map[page.get("page_id", "")] = page.get("page_name", "")
+        context["_fb_page_map"] = page_map
+        return context
+
+    def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
+        ws_ids = get_user_workspaces(self.request.user)
+        # Subquery to get the channel profile_url for this conversation's channel
+        # This avoids N+1 queries when serializing customer avatars
+        channel_avatar_sq = CustomerChannel.objects.filter(
+            customer=OuterRef("customer_id"),
+            channel=OuterRef("channel"),
+        ).values("profile_url")[:1]
+
         qs = Conversation.objects.filter(workspace_id__in=ws_ids).select_related(
             "customer", "assigned_to"
-        ).prefetch_related("labels")
+        ).prefetch_related("labels").annotate(
+            _channel_avatar=Subquery(channel_avatar_sq, output_field=CharField()),
+        )
 
         # Filters
         channel = self.request.query_params.get("channel")
@@ -80,6 +113,11 @@ class ConversationListView(generics.ListAPIView):
                 Q(customer__phone__icontains=search)
             )
 
+        # Filter by Facebook Page ID
+        page_id = self.request.query_params.get("page_id")
+        if page_id:
+            qs = qs.filter(config__page_id=page_id)
+
         return qs
 
 
@@ -90,6 +128,8 @@ class ConversationDetailView(generics.RetrieveUpdateAPIView):
     lookup_url_kwarg = "conversation_id"
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Conversation.objects.filter(workspace_id__in=ws_ids).select_related("customer", "assigned_to")
 
@@ -102,10 +142,13 @@ class ConversationDetailView(generics.RetrieveUpdateAPIView):
 
 
 class MessageListView(generics.ListAPIView):
+    queryset = Message.objects.none()
     serializer_class = MessageSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         conversation_id = self.kwargs["conversation_id"]
         ws_ids = get_user_workspaces(self.request.user)
         return Message.objects.filter(
@@ -334,10 +377,13 @@ class ConversationLabelsView(APIView):
 
 
 class LabelListCreateView(generics.ListCreateAPIView):
+    queryset = Label.objects.none()
     serializer_class = LabelSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Label.objects.filter(workspace_id__in=ws_ids)
 
@@ -345,7 +391,8 @@ class LabelListCreateView(generics.ListCreateAPIView):
         ws_id = self.request.data.get("workspace_id")
         ws_ids = get_user_workspaces(self.request.user)
         if str(ws_id) not in ws_ids:
-            return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Invalid workspace.")
         serializer.save(workspace_id=ws_id)
 
 
@@ -354,6 +401,8 @@ class LabelDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Label.objects.filter(workspace_id__in=ws_ids)
 
@@ -368,3 +417,31 @@ class TypingIndicatorView(APIView):
         from .consumers import broadcast_typing
         broadcast_typing(conv, request.user, request.data.get("is_typing", True))
         return api_success(message="OK")
+
+
+class FacebookPagesView(APIView):
+    """List all connected Facebook Pages across all Facebook integrations.
+    Used by the inbox to build a page filter dropdown."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ws_ids = get_user_workspaces(request.user)
+        from apps.integrations.models import Integration
+        pages = []
+        seen = set()
+        for integration in Integration.objects.filter(
+            workspace_id__in=ws_ids,
+            integration_type="facebook",
+            status="connected",
+        ):
+            for page in (integration.config or {}).get("connected_pages", []):
+                pid = page.get("page_id", "")
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    pages.append({
+                        "page_id": pid,
+                        "page_name": page.get("page_name", ""),
+                        "integration_id": str(integration.id),
+                    })
+        return api_success(data=pages, message="Facebook pages")

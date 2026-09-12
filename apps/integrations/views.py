@@ -8,6 +8,9 @@ from .models import Integration, WebhookEvent, SyncLog
 from .serializers import IntegrationSerializer, WebhookEventSerializer, SyncLogSerializer
 from apps.inbox.views import get_user_workspaces
 from common.api_response import api_error, api_success, api_paginated
+from apps.integrations.models import Integration
+from apps.integrations.models import WebhookEvent
+from apps.integrations.models import SyncLog
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +22,13 @@ def get_integration_for_user(user, pk):
 
 
 class IntegrationListView(generics.ListCreateAPIView):
+    queryset = Integration.objects.none()
     serializer_class = IntegrationSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Integration.objects.filter(workspace_id__in=ws_ids)
 
@@ -32,11 +38,14 @@ class IntegrationListView(generics.ListCreateAPIView):
         if str(ws_id) not in ws_ids:
             return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
         integration_type = request.data.get("integration_type")
-        integration, created = Integration.objects.get_or_create(
-            workspace_id=ws_id, integration_type=integration_type,
-            defaults={"status": "pending", "display_name": request.data.get("display_name", "")},
+        # Allow multiple integrations of the same type (e.g. multiple Facebook accounts)
+        integration = Integration.objects.create(
+            workspace_id=ws_id,
+            integration_type=integration_type,
+            status="pending",
+            display_name=request.data.get("display_name", ""),
         )
-        return Response(IntegrationSerializer(integration).data, status=201 if created else 200)
+        return Response(IntegrationSerializer(integration).data, status=201)
 
 
 class IntegrationDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -44,6 +53,8 @@ class IntegrationDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return Integration.objects.filter(workspace_id__in=ws_ids)
 
@@ -59,9 +70,13 @@ class IntegrationConnectView(APIView):
         if str(ws_id) not in ws_ids:
             return api_error("Invalid workspace.", code="BAD_REQUEST", status_code=400)
 
-        integration, _ = Integration.objects.get_or_create(
-            workspace_id=ws_id, integration_type=integration_type,
-            defaults={"status": "pending"},
+        # Create a new integration record for each connect attempt
+        # (supports multiple Facebook accounts per workspace)
+        integration = Integration.objects.create(
+            workspace_id=ws_id,
+            integration_type=integration_type,
+            status="pending",
+            display_name="",
         )
 
         from django.conf import settings
@@ -138,9 +153,9 @@ class IntegrationCompleteView(APIView):
     def post(self, request, integration_type):
         code = request.data.get("code", "")
         state = request.data.get("state", "")
-        integration = Integration.objects.filter(id=state).first()
+        integration = get_integration_for_user(request.user, state)
         if not integration:
-            return api_error("Invalid state.", code="BAD_REQUEST", status_code=400)
+            return api_error("Invalid state or integration not found.", code="BAD_REQUEST", status_code=400)
 
         from django.conf import settings
         redirect_uri = f"{settings.FRONTEND_URL}/api/integrations/callback/{integration_type}/"
@@ -252,10 +267,13 @@ class IntegrationDisconnectView(APIView):
 
 
 class WebhookEventListView(generics.ListAPIView):
+    queryset = WebhookEvent.objects.none()
     serializer_class = WebhookEventSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         qs = WebhookEvent.objects.filter(workspace_id__in=ws_ids)
         status = self.request.query_params.get("status")
@@ -278,10 +296,13 @@ class WebhookReplayView(APIView):
 
 
 class SyncLogListView(generics.ListAPIView):
+    queryset = SyncLog.objects.none()
     serializer_class = SyncLogSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return SyncLog.objects.filter(integration__workspace_id__in=ws_ids)
 
@@ -322,7 +343,14 @@ def _sync_facebook_historical(integration):
         return api_success(data={"status": "completed", "synced": 0}, message="No conversations found on Facebook Page")
 
     workspace = integration.workspace
-    page_id = integration.get_credentials().get("page_id", "")
+    creds = integration.get_credentials()
+    # All configured Page IDs (multi-page aware) for sender-type detection
+    configured_pages = creds.get("pages", [])
+    page_ids = {p.get("page_id", "") for p in configured_pages if p.get("page_id")}
+    # Legacy single-page fallback
+    legacy_page_id = creds.get("page_id", "")
+    if legacy_page_id:
+        page_ids.add(legacy_page_id)
     synced_convs = 0
     synced_msgs = 0
 
@@ -382,7 +410,7 @@ def _sync_facebook_historical(integration):
             if existing:
                 continue
 
-            is_from_page = (m.get("from_id") == page_id)
+            is_from_page = (m.get("from_id") in page_ids) if page_ids else False
             sender_type = "agent" if is_from_page else "customer"
             direction = "outbound" if is_from_page else "inbound"
 
@@ -452,9 +480,7 @@ class WhatsAppSetupView(APIView):
         phone_number_id = request.data.get("phone_number_id", "").strip()
 
         if not access_token or not phone_number_id:
-            return api_success(data={
-                "error": "access_token and phone_number_id are required."
-            }, status=400)
+            return api_error("access_token and phone_number_id are required.", code="BAD_REQUEST", status_code=400)
 
         integration, _ = Integration.objects.get_or_create(
             workspace_id=ws_id, integration_type="whatsapp",

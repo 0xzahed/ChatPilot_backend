@@ -10,6 +10,7 @@ from .serializers import (
 )
 from apps.inbox.views import get_user_workspaces
 from common.api_response import api_error, api_success, api_paginated
+from apps.ai.models import AIEvent
 
 
 class AISettingsView(generics.RetrieveUpdateAPIView):
@@ -39,10 +40,13 @@ class AIInstructionsView(generics.RetrieveUpdateAPIView):
 
 
 class AIEventListView(generics.ListAPIView):
+    queryset = AIEvent.objects.none()
     serializer_class = AIEventSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         ws_ids = get_user_workspaces(self.request.user)
         return AIEvent.objects.filter(workspace_id__in=ws_ids)
 

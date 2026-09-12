@@ -11,11 +11,31 @@ from common.api_response import api_error, api_success, api_paginated
 logger = logging.getLogger(__name__)
 
 
-def _get_facebook_integration():
-    """Find the active Facebook integration (any workspace)."""
-    return Integration.objects.filter(
+def _get_facebook_integration(page_id: str = ""):
+    """Find the active Facebook integration that owns the given Page ID.
+
+    When a page_id is supplied (from a webhook recipient.id), we match it
+    against the configured pages in each integration's credentials so that
+    multi-workspace setups route the webhook to the correct workspace.
+
+    Falls back to the first active integration when no page_id is available
+    (e.g. webhook verification GET, or legacy single-page credentials).
+    """
+    integrations = Integration.objects.filter(
         integration_type="facebook", is_active=True, status="connected"
-    ).first()
+    )
+    if not page_id:
+        return integrations.first()
+    for integration in integrations:
+        creds = integration.get_credentials()
+        pages = creds.get("pages", [])
+        if any(p.get("page_id") == page_id for p in pages):
+            return integration
+        # Legacy single-page fallback
+        if not pages and creds.get("page_id") == page_id:
+            return integration
+    # No match by page_id — fall back to first so we still store the event
+    return integrations.first()
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -44,7 +64,34 @@ class FacebookWebhookView(View):
         except json.JSONDecodeError:
             return JsonResponse({"success": False, "message": "Invalid JSON", "code": "BAD_REQUEST"}, status=400)
 
-        integration = _get_facebook_integration()
+        # Extract the recipient Page ID from the first entry to route to the
+        # correct integration/workspace in multi-Page, multi-workspace setups.
+        recipient_page_id = ""
+        try:
+            for entry in payload.get("entry", []):
+                for ev in entry.get("messaging", []):
+                    rid = ev.get("recipient", {}).get("id", "")
+                    if rid:
+                        recipient_page_id = rid
+                        break
+                if recipient_page_id:
+                    break
+        except Exception:
+            pass
+
+        integration = _get_facebook_integration(recipient_page_id)
+
+        # Verify webhook signature if META_APP_SECRET is configured
+        from django.conf import settings
+        if getattr(settings, "META_APP_SECRET", ""):
+            signature = request.headers.get("X-Hub-Signature-256", "")
+            provider = get_facebook_provider(integration)
+            if not provider.verify_signature(body, signature):
+                logger.warning("Facebook webhook signature verification failed")
+                return JsonResponse(
+                    {"success": False, "message": "Invalid signature", "code": "INVALID_SIGNATURE"},
+                    status=403,
+                )
 
         # Store webhook event for idempotency and replay
         external_id = payload.get("entry", [{}])[0].get("id", "") if payload.get("entry") else ""
@@ -218,7 +265,11 @@ def _process_webhook_sync(webhook_event, integration, source):
 
 
 def _enrich_sender_names(provider, messages):
-    """Fetch sender names and profile pictures from Facebook Graph API."""
+    """Fetch sender names and profile pictures from Facebook Graph API.
+
+    Uses the correct Page access token for each message by looking up the
+    Page ID on the incoming message against the integration's configured pages.
+    """
     import httpx
     from apps.integrations.models import Integration
 
@@ -230,23 +281,27 @@ def _enrich_sender_names(provider, messages):
 
     creds = integration.get_credentials()
     pages = creds.get("pages", [])
-    page_token = pages[0].get("page_access_token", "") if pages else creds.get("page_access_token", "")
-    if not page_token:
+    # Build a page_id -> token map for per-page token selection
+    page_token_map = {p.get("page_id", ""): p.get("page_access_token", "") for p in pages}
+    fallback_token = pages[0].get("page_access_token", "") if pages else creds.get("page_access_token", "")
+    if not fallback_token and not page_token_map:
         return
 
-    # Collect unique sender IDs
-    sender_ids = set()
+    # Collect unique (sender_id, page_id) pairs so we use the right token per page
+    sender_page_pairs = set()
     for msg in messages:
         if msg.sender_external_id:
-            sender_ids.add(msg.sender_external_id)
+            sender_page_pairs.add((msg.sender_external_id, msg.page_id or ""))
 
-    # Fetch names + profile pics in batch
     with httpx.Client(timeout=10) as client:
-        for sid in sender_ids:
+        for sid, page_id in sender_page_pairs:
+            token = page_token_map.get(page_id) or fallback_token
+            if not token:
+                continue
             try:
                 resp = client.get(
                     f"https://graph.facebook.com/v20.0/{sid}",
-                    params={"access_token": page_token, "fields": "name,first_name,last_name,picture{url}"},
+                    params={"access_token": token, "fields": "name,first_name,last_name,picture{url}"},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -259,4 +314,4 @@ def _enrich_sender_names(provider, messages):
                             if pic_url:
                                 msg.sender_pic = pic_url
             except Exception as e:
-                logger.warning(f"Failed to fetch name for sender {sid}: {e}")
+                logger.warning(f"Failed to fetch name for sender {sid} (page {page_id}): {e}")

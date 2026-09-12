@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from .models import Workspace, WorkspaceMembership, WorkspaceSettings
 from common.api_response import api_error, api_success, api_paginated
+from common.permissions import require_workspace_admin
 from .serializers import (
     WorkspaceSerializer, WorkspaceMembershipSerializer,
     CreateWorkspaceSerializer, WorkspaceSettingsSerializer,
@@ -41,14 +42,19 @@ class WorkspaceDetailView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         return Workspace.objects.filter(memberships__user=self.request.user)
 
 
 class WorkspaceMembersView(generics.ListCreateAPIView):
     serializer_class = WorkspaceMembershipSerializer
     permission_classes = [IsAuthenticated]
+    queryset = WorkspaceMembership.objects.none()
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return self.queryset
         workspace_id = self.kwargs["workspace_id"]
         return WorkspaceMembership.objects.filter(workspace_id=workspace_id)
 
@@ -57,6 +63,8 @@ class WorkspaceMembersView(generics.ListCreateAPIView):
         workspace = Workspace.objects.filter(id=workspace_id, memberships__user=request.user).first()
         if not workspace:
             return api_error("Workspace not found.", code="NOT_FOUND", status_code=404)
+        # Only admins/owners can add members
+        require_workspace_admin(request.user, workspace_id)
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         from apps.accounts.models import User
