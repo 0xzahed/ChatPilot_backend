@@ -18,7 +18,17 @@
     return;
   }
 
-  var API_BASE = "https://chatpilot.devtosoft.tech/api";
+  // Derive the API base from the script's own origin so the widget works on
+  // any deployment (the script tag src points at <host>/static/webchat/widget.js).
+  var API_BASE = (function () {
+    var src = scriptTag.getAttribute("src") || "";
+    try {
+      var u = new URL(src, window.location.href);
+      return u.origin + "/api";
+    } catch (e) {
+      return "https://chatpilot.devtosoft.tech/api";
+    }
+  })();
   var config = null;
   var sessionToken = localStorage.getItem("chatpilot_session_" + workspaceId);
   var isOpen = false;
@@ -27,9 +37,11 @@
   // Load config
   fetch(API_BASE + "/webchat/public/" + workspaceId + "/")
     .then(function (r) { return r.json(); })
-    .then(function (data) {
-      if (data.error) {
-        console.error("[ChatPilot]", data.error);
+    .then(function (body) {
+      // Standardized envelope: {success, data} / {success:false, message}
+      var data = body && body.success ? body.data : null;
+      if (!data) {
+        console.error("[ChatPilot]", (body && body.message) || "config error");
         return;
       }
       config = data;
@@ -135,7 +147,9 @@
       body: JSON.stringify({ workspace_id: workspaceId }),
     })
       .then(function (r) { return r.json(); })
-      .then(function (data) {
+      .then(function (body) {
+        var data = body && body.success ? body.data : null;
+        if (!data || !data.session_token) return;
         sessionToken = data.session_token;
         localStorage.setItem("chatpilot_session_" + workspaceId, sessionToken);
       })
@@ -162,8 +176,9 @@
       }),
     })
       .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (data.auto_reply) {
+      .then(function (body) {
+        var data = body && body.success ? body.data : null;
+        if (data && data.auto_reply) {
           addMessage("bot", data.auto_reply);
         }
       })

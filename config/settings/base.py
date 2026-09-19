@@ -1,6 +1,7 @@
 import environ
 from pathlib import Path
 from datetime import timedelta
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -140,7 +141,7 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "common.authentication.JWTOrCookieAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticated",
@@ -163,6 +164,7 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_RATES": {
         "auth": env("THROTTLE_AUTH", default="30/min"),
         "webchat": env("THROTTLE_WEBCHAT", default="60/min"),
+        "webchat_session": env("THROTTLE_WEBCHAT_SESSION", default="30/min"),
         "webhook": env("THROTTLE_WEBHOOK", default="600/min"),
     },
 }
@@ -184,6 +186,15 @@ SPECTACULAR_SETTINGS = {
 
 CORS_ALLOWED_ORIGINS = env("CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"])
 CORS_ALLOW_CREDENTIALS = True
+
+# ─── Auth cookies (HttpOnly JWT transport) ───────────────────
+# The SPA stores tokens in HttpOnly SameSite=Lax cookies instead of
+# localStorage. Secure flag is env-driven: required True in production
+# (HTTPS), False only for plain-HTTP development.
+AUTH_COOKIE_ACCESS_NAME = "access_token"
+AUTH_COOKIE_REFRESH_NAME = "refresh_token"
+AUTH_COOKIE_SECURE = env.bool("AUTH_COOKIE_SECURE", default=False)
+AUTH_COOKIE_SAMESITE = "Lax"
 
 # ─── App Settings ─────────────────────────────────────────────
 AI_PROVIDER = env("AI_PROVIDER", default="mock")
@@ -216,5 +227,22 @@ FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 EMAIL_BACKEND = env("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="noreply@openchat.local")
 
-# Credential encryption key — in production set via env
-CREDENTIAL_ENCRYPTION_KEY = env("CREDENTIAL_ENCRYPTION_KEY", default="openchat-dev-encryption-key-32b!")
+# Credential encryption key — REQUIRED via environment in production.
+# A hardcoded fallback would silently encrypt production credentials with a
+# publicly-known secret, so it only exists behind DEBUG. Production must set
+# CREDENTIAL_ENCRYPTION_KEY; startup fails closed without it.
+CREDENTIAL_ENCRYPTION_KEY = env("CREDENTIAL_ENCRYPTION_KEY", default="")
+if not CREDENTIAL_ENCRYPTION_KEY:
+    if DEBUG:
+        import warnings as _warnings
+
+        _warnings.warn(
+            "CREDENTIAL_ENCRYPTION_KEY is not set — using an insecure "
+            "development-only key. Never run with DEBUG=True in production.",
+            stacklevel=2,
+        )
+        CREDENTIAL_ENCRYPTION_KEY = "dev-only-insecure-encryption-key-32b!"
+    else:
+        raise ImproperlyConfigured(
+            "Set the CREDENTIAL_ENCRYPTION_KEY environment variable"
+        )

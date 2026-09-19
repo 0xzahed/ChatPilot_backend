@@ -24,4 +24,13 @@ SECURE_BROWSER_XSS_FILTER = True
 SECURE_REFERRER_POLICY = "same-origin"
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
+AUTH_COOKIE_SECURE = True  # auth cookies require HTTPS in production
 X_FRAME_OPTIONS = "DENY"
+
+# Shared cache — required so WS auth tickets work across processes/workers
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env("REDIS_URL", default="redis://localhost:6379/0"),
+    }
+}

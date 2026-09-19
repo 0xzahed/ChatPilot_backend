@@ -361,7 +361,7 @@ def _sync_facebook_historical(integration):
         thread_page_id = thread.get("page_id", "")
 
         # Find or create customer
-        channel = CustomerChannel.objects.filter(channel="facebook", external_id=sender_id).first()
+        channel = CustomerChannel.objects.filter(workspace=workspace, channel="facebook", external_id=sender_id).first()
         if channel:
             customer = channel.customer
             if sender_pic and not channel.profile_url:
@@ -374,6 +374,7 @@ def _sync_facebook_historical(integration):
             )
             CustomerChannel.objects.create(
                 customer=customer,
+                workspace=workspace,
                 channel="facebook",
                 external_id=sender_id,
                 display_name=sender_name,

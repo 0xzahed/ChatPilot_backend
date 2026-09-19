@@ -1,5 +1,8 @@
 from .base import *  # noqa: F401,F403
 
+# Test-only throwaway encryption key.
+CREDENTIAL_ENCRYPTION_KEY = "test-only-insecure-encryption-key-32b!"
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",

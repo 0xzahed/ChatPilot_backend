@@ -56,7 +56,12 @@ class WorkspaceMembersView(generics.ListCreateAPIView):
         if getattr(self, "swagger_fake_view", False):
             return self.queryset
         workspace_id = self.kwargs["workspace_id"]
-        return WorkspaceMembership.objects.filter(workspace_id=workspace_id)
+        # Only members may enumerate a workspace's member list — otherwise
+        # any authenticated user could enumerate other tenants' teams.
+        return WorkspaceMembership.objects.filter(
+            workspace_id=workspace_id,
+            workspace__memberships__user=self.request.user,
+        )
 
     def create(self, request, **kwargs):
         workspace_id = kwargs["workspace_id"]
@@ -84,5 +89,11 @@ class WorkspaceSettingsView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         workspace_id = self.kwargs["workspace_id"]
+        # Require membership before reading or mutating workspace settings.
+        if not WorkspaceMembership.objects.filter(
+            workspace_id=workspace_id, user=self.request.user
+        ).exists():
+            from rest_framework.exceptions import NotFound
+            raise NotFound("Workspace not found.")
         ws, _ = WorkspaceSettings.objects.get_or_create(workspace_id=workspace_id)
         return ws

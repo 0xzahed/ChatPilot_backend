@@ -48,6 +48,7 @@ class CustomerChannel(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey(Customer, on_delete=models.CASCADE, related_name="channels")
+    workspace = models.ForeignKey(Workspace, on_delete=models.CASCADE, related_name="customer_channels")
     channel = models.CharField(max_length=20)  # facebook, instagram, whatsapp, website
     external_id = models.CharField(max_length=255)  # PSID, IG ID, phone number, visitor ID
     display_name = models.CharField(max_length=255, blank=True)
@@ -56,8 +57,8 @@ class CustomerChannel(models.Model):
 
     class Meta:
         db_table = "customer_channels"
-        unique_together = ["channel", "external_id"]
-        indexes = [models.Index(fields=["channel", "external_id"])]
+        unique_together = ["workspace", "channel", "external_id"]
+        indexes = [models.Index(fields=["workspace", "channel", "external_id"])]
 
 
 class CustomerTimelineEvent(models.Model):

@@ -45,29 +45,27 @@ def process_incoming_messages(webhook_event_id, source):
         incoming_messages = provider.process_webhook(event.payload, {})
 
         for incoming in incoming_messages:
-            # Find or create customer
+            # Find or create customer (scoped to workspace)
+            workspace = event.workspace
+            if not workspace and integration:
+                workspace = integration.workspace
+            if not workspace:
+                continue
+
             customer_channel = CustomerChannel.objects.filter(
-                channel=incoming.channel, external_id=incoming.sender_external_id
+                workspace=workspace, channel=incoming.channel, external_id=incoming.sender_external_id
             ).first()
 
             if customer_channel:
                 customer = customer_channel.customer
             else:
-                # Create new customer
-                workspace = event.workspace
-                if not workspace:
-                    # Try to find workspace from integration
-                    if integration:
-                        workspace = integration.workspace
-                    else:
-                        continue
-
                 customer = Customer.objects.create(
                     workspace=workspace,
                     name=incoming.sender_name or "Unknown Customer",
                 )
                 CustomerChannel.objects.create(
                     customer=customer,
+                    workspace=workspace,
                     channel=incoming.channel,
                     external_id=incoming.sender_external_id,
                     display_name=incoming.sender_name,

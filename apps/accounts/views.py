@@ -8,7 +8,7 @@ from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
 
@@ -38,6 +38,33 @@ def _create_session(request, user, refresh):
         )
     except Exception:
         pass
+
+
+def _set_auth_cookies(response, access: str, refresh: str):
+    """Attach JWTs as HttpOnly cookies (never JS-readable)."""
+    secure = getattr(settings, "AUTH_COOKIE_SECURE", False)
+    samesite = getattr(settings, "AUTH_COOKIE_SAMESITE", "Lax")
+    access_max_age = int(settings.SIMPLE_JWT["ACCESS_TOKEN_LIFETIME"].total_seconds())
+    refresh_max_age = int(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"].total_seconds())
+    response.set_cookie(
+        settings.AUTH_COOKIE_ACCESS_NAME, access,
+        max_age=access_max_age, httponly=True, secure=secure,
+        samesite=samesite, path="/",
+    )
+    response.set_cookie(
+        settings.AUTH_COOKIE_REFRESH_NAME, refresh,
+        max_age=refresh_max_age, httponly=True, secure=secure,
+        samesite=samesite, path="/",
+    )
+
+
+def _clear_auth_cookies(response):
+    response.delete_cookie(settings.AUTH_COOKIE_ACCESS_NAME, path="/")
+    response.delete_cookie(settings.AUTH_COOKIE_REFRESH_NAME, path="/")
+
+
+def _wants_cookies(request) -> bool:
+    return bool(request.data.get("cookie_mode") or request.data.get("use_cookies"))
 
 
 class RegisterView(generics.CreateAPIView):
@@ -83,6 +110,17 @@ class LoginView(TokenObtainPairView):
                     _create_session(request, user, refresh)
             except Exception:
                 pass
+            if _wants_cookies(request):
+                # Cookie mode: tokens go into HttpOnly cookies and are NOT
+                # returned in the body, so JavaScript can never read them.
+                body = api_success(
+                    data={"user": UserSerializer(user).data if user else None},
+                    message="Login successful",
+                )
+                _set_auth_cookies(
+                    body, response.data["access"], response.data["refresh"]
+                )
+                return body
             return api_success(data=response.data, message="Login successful")
         return response
 
@@ -92,13 +130,66 @@ class LogoutView(APIView):
 
     def post(self, request):
         try:
-            refresh_token = request.data.get("refresh")
-            token = RefreshToken(refresh_token)
-            token.blacklist()
-            Session.objects.filter(user=request.user, refresh_token_jti=token["jti"]).update(revoked_at=timezone.now())
+            refresh_token = request.data.get("refresh") or request.COOKIES.get(
+                settings.AUTH_COOKIE_REFRESH_NAME
+            )
+            if refresh_token:
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+                Session.objects.filter(
+                    user=request.user, refresh_token_jti=token["jti"]
+                ).update(revoked_at=timezone.now())
         except Exception:
             pass
-        return api_success(message="Logged out successfully")
+        response = api_success(message="Logged out successfully")
+        _clear_auth_cookies(response)
+        return response
+
+
+class CookieTokenRefreshView(TokenRefreshView):
+    """Refresh access token from body OR the HttpOnly refresh cookie.
+
+    When the refresh came from the cookie, the new access token is written
+    back to the access cookie and the body omits raw tokens.
+    """
+
+    def post(self, request, *args, **kwargs):
+        cookie_refresh = request.COOKIES.get(settings.AUTH_COOKIE_REFRESH_NAME)
+        if cookie_refresh:
+            data = request.data
+            if not isinstance(data, dict):
+                data = {}
+            else:
+                data = dict(data)
+            data.setdefault("refresh", cookie_refresh)
+            request._full_data = data
+        response = super().post(request, *args, **kwargs)
+        if response.status_code == 200 and cookie_refresh:
+            access = response.data.get("access")
+            body = api_success(data={}, message="Token refreshed")
+            _set_auth_cookies(body, access, cookie_refresh)
+            return body
+        return response
+
+
+class WsTicketView(APIView):
+    """Issue a short-lived, single-use WebSocket auth ticket.
+
+    Browser clients exchange their cookie-authenticated session for a ticket
+    and pass it as `?ticket=` on the WS handshake — avoiding long-lived JWTs
+    in URLs (which leak via logs, proxies, and browser history).
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "auth"
+
+    def post(self, request):
+        import uuid as _uuid
+        from django.core.cache import cache
+
+        ticket = _uuid.uuid4().hex
+        cache.set(f"ws_ticket:{ticket}", str(request.user.id), timeout=60)
+        return api_success(data={"ticket": ticket, "expires_in": 60})
 
 
 class MeView(APIView):

@@ -83,8 +83,10 @@ class MessageAttachmentSerializer(serializers.ModelSerializer):
         fields = ["id", "file_url", "file_type", "file_name", "file_size", "mime_type", "created_at"]
 
     def get_file_url(self, obj):
+        # Serve through the authenticated download endpoint — never expose
+        # raw media paths to unauthorized users.
         if obj.file:
-            return obj.file.url
+            return f"/api/conversations/attachments/{obj.id}/"
         return None
 
 
@@ -111,6 +113,8 @@ class MessageSerializer(serializers.ModelSerializer):
         if obj.sent_by:
             name = f"{obj.sent_by.first_name} {obj.sent_by.last_name}".strip()
             return name or obj.sent_by.username
+        if obj.ai_metadata.get("iedu_sender"):
+            return obj.ai_metadata["iedu_sender"]
         return "System"
 
 

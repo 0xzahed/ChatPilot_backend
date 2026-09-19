@@ -18,8 +18,10 @@ def _get_facebook_integration(page_id: str = ""):
     against the configured pages in each integration's credentials so that
     multi-workspace setups route the webhook to the correct workspace.
 
-    Falls back to the first active integration when no page_id is available
-    (e.g. webhook verification GET, or legacy single-page credentials).
+    Falls back to the first active integration ONLY when no page_id is
+    supplied (e.g. webhook verification GET). When a page_id IS supplied but
+    matches no configured page, returns None — routing an unknown page's
+    events to an arbitrary workspace would cross the tenant boundary.
     """
     integrations = Integration.objects.filter(
         integration_type="facebook", is_active=True, status="connected"
@@ -34,8 +36,8 @@ def _get_facebook_integration(page_id: str = ""):
         # Legacy single-page fallback
         if not pages and creds.get("page_id") == page_id:
             return integration
-    # No match by page_id — fall back to first so we still store the event
-    return integrations.first()
+    # Unknown page_id — fail closed rather than leak events to a wrong tenant
+    return None
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -58,9 +60,44 @@ class FacebookWebhookView(View):
 
     def post(self, request):
         """Incoming webhook event from Meta."""
-        body = request.body
+        import hmac as _hmac
+        import hashlib as _hashlib
+
+        raw_body = request.body
+
+        # SEC-04: Verify webhook signature — fail closed if META_APP_SECRET is missing
+        from django.conf import settings
+        app_secret = getattr(settings, "META_APP_SECRET", "")
+        if not app_secret:
+            logger.error("META_APP_SECRET is not configured — rejecting Facebook webhook")
+            return JsonResponse(
+                {"success": False, "message": "Webhook verification not configured", "code": "CONFIG_ERROR"},
+                status=500,
+            )
+
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        if not signature or not signature.startswith("sha256="):
+            logger.warning("Facebook webhook missing or malformed signature")
+            return JsonResponse(
+                {"success": False, "message": "Invalid signature", "code": "INVALID_SIGNATURE"},
+                status=403,
+            )
+
+        expected_sig = signature[7:]
+        computed = _hmac.new(
+            app_secret.encode("utf-8"),
+            raw_body,
+            _hashlib.sha256,
+        ).hexdigest()
+        if not _hmac.compare_digest(computed, expected_sig):
+            logger.warning("Facebook webhook signature verification failed")
+            return JsonResponse(
+                {"success": False, "message": "Invalid signature", "code": "INVALID_SIGNATURE"},
+                status=403,
+            )
+
         try:
-            payload = json.loads(body)
+            payload = json.loads(raw_body)
         except json.JSONDecodeError:
             return JsonResponse({"success": False, "message": "Invalid JSON", "code": "BAD_REQUEST"}, status=400)
 
@@ -81,40 +118,34 @@ class FacebookWebhookView(View):
 
         integration = _get_facebook_integration(recipient_page_id)
 
-        # Verify webhook signature if META_APP_SECRET is configured
-        from django.conf import settings
-        if getattr(settings, "META_APP_SECRET", ""):
-            signature = request.headers.get("X-Hub-Signature-256", "")
-            provider = get_facebook_provider(integration)
-            if not provider.verify_signature(body, signature):
-                logger.warning("Facebook webhook signature verification failed")
-                return JsonResponse(
-                    {"success": False, "message": "Invalid signature", "code": "INVALID_SIGNATURE"},
-                    status=403,
-                )
+        # Idempotency check — skip if we already have this external_id
+        external_id = payload.get("entry", [{}])[0].get("id", "") if payload.get("entry") else ""
+        if external_id and WebhookEvent.objects.filter(external_id=external_id, source="facebook").exists():
+            return JsonResponse({"status": "duplicate"})
 
         # Store webhook event for idempotency and replay
-        external_id = payload.get("entry", [{}])[0].get("id", "") if payload.get("entry") else ""
         webhook_event = WebhookEvent.objects.create(
             workspace=integration.workspace if integration else None,
             source="facebook",
             event_type=payload.get("object", ""),
             external_id=external_id,
             payload=payload,
-            signature=request.headers.get("X-Hub-Signature-256", ""),
+            signature=signature,
         )
 
-        # Process with provider
-        provider = get_facebook_provider(integration)
-        messages = provider.process_webhook(payload, dict(request.headers))
-
-        # Process synchronously (no Celery available) — run the task logic directly
+        # SEC-10: Queue background processing via Celery instead of synchronous execution
         try:
-            _process_webhook_sync(webhook_event, integration, "facebook")
+            from apps.integrations.tasks import process_incoming_messages
+            process_incoming_messages.delay(str(webhook_event.id), "facebook")
         except Exception as e:
-            logger.error(f"Webhook sync processing error: {e}")
+            # Fallback to synchronous processing if Celery is unavailable
+            logger.warning(f"Celery unavailable, processing synchronously: {e}")
+            try:
+                _process_webhook_sync(webhook_event, integration, "facebook")
+            except Exception as sync_err:
+                logger.error(f"Webhook sync processing error: {sync_err}")
 
-        return JsonResponse({"status": "received", "messages": len(messages)})
+        return JsonResponse({"status": "received"})
 
 
 def _process_webhook_sync(webhook_event, integration, source):
@@ -159,9 +190,14 @@ def _process_webhook_sync(webhook_event, integration, source):
             if not incoming.content and not incoming.attachment_url:
                 continue
 
-            # Find or create customer
+            # Find or create customer (scoped to workspace)
+            if not workspace:
+                workspace = integration.workspace if integration else None
+            if not workspace:
+                continue
+
             customer_channel = CustomerChannel.objects.filter(
-                channel=incoming.channel, external_id=incoming.sender_external_id
+                workspace=workspace, channel=incoming.channel, external_id=incoming.sender_external_id
             ).first()
 
             if customer_channel:
@@ -177,16 +213,13 @@ def _process_webhook_sync(webhook_event, integration, source):
                     customer_channel.profile_url = incoming.sender_pic
                     customer_channel.save(update_fields=["profile_url"])
             else:
-                if not workspace:
-                    workspace = integration.workspace if integration else None
-                if not workspace:
-                    continue
                 customer = Customer.objects.create(
                     workspace=workspace,
                     name=incoming.sender_name or "Unknown Customer",
                 )
                 CustomerChannel.objects.create(
                     customer=customer,
+                    workspace=workspace,
                     channel=incoming.channel,
                     external_id=incoming.sender_external_id,
                     display_name=incoming.sender_name,

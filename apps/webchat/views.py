@@ -57,6 +57,12 @@ class WebchatSessionView(APIView):
     permission_classes = [AllowAny]
     throttle_scope = "webchat"
 
+    def get_throttles(self):
+        # IP-scoped (DEFAULT) + session-scoped throttling
+        from rest_framework.throttling import ScopedRateThrottle
+        from .throttling import WebchatSessionRateThrottle
+        return [ScopedRateThrottle(), WebchatSessionRateThrottle()]
+
     @transaction.atomic
     def post(self, request):
         workspace_id = request.data.get("workspace_id")
@@ -110,6 +116,12 @@ class WebchatMessageView(APIView):
     permission_classes = [AllowAny]
     throttle_scope = "webchat"
 
+    def get_throttles(self):
+        # IP-scoped (DEFAULT) + session-scoped throttling
+        from rest_framework.throttling import ScopedRateThrottle
+        from .throttling import WebchatSessionRateThrottle
+        return [ScopedRateThrottle(), WebchatSessionRateThrottle()]
+
     @transaction.atomic
     def post(self, request):
         workspace_id = request.data.get("workspace_id")
@@ -142,7 +154,7 @@ class WebchatMessageView(APIView):
 
         # Find or create customer
         channel = CustomerChannel.objects.filter(
-            channel="website", external_id=session.session_token
+            workspace_id=workspace_id, channel="website", external_id=session.session_token
         ).first()
         if channel:
             customer = channel.customer
@@ -153,6 +165,7 @@ class WebchatMessageView(APIView):
             )
             CustomerChannel.objects.create(
                 customer=customer,
+                workspace_id=workspace_id,
                 channel="website",
                 external_id=session.session_token,
                 display_name=session.visitor_name,

@@ -2,6 +2,7 @@ import json
 import logging
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.layers import get_channel_layer
+from channels.db import database_sync_to_async
 from asgiref.sync import async_to_sync
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,37 @@ def broadcast_ai_completed(conversation, suggestion):
     _broadcast("ai_completed", conversation, {"suggestion": suggestion})
 
 
+@database_sync_to_async
+def _user_can_access_conversation(user, conversation_id):
+    """Check if user is a member of the workspace that owns the conversation.
+
+    Returns False for non-existent conversations as well (no information leak).
+    """
+    from apps.inbox.models import Conversation
+    from apps.workspaces.models import WorkspaceMembership
+
+    try:
+        conversation = Conversation.objects.select_related("workspace").get(id=conversation_id)
+    except Conversation.DoesNotExist:
+        return False
+
+    return WorkspaceMembership.objects.filter(
+        workspace=conversation.workspace,
+        user=user,
+    ).exists()
+
+
+@database_sync_to_async
+def _user_is_workspace_member(user, workspace_id):
+    """Check if user is a member of the specified workspace."""
+    from apps.workspaces.models import WorkspaceMembership
+
+    return WorkspaceMembership.objects.filter(
+        workspace_id=workspace_id,
+        user=user,
+    ).exists()
+
+
 class ConversationConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
         self.conversation_id = self.scope["url_route"]["kwargs"]["conversation_id"]
@@ -61,12 +93,23 @@ class ConversationConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4001)
             return
 
+        # Authorization check — user must be a member of the conversation's workspace
+        has_access = await _user_can_access_conversation(user, self.conversation_id)
+        if not has_access:
+            await self.close(code=4403)
+            return
+
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
         if hasattr(self, "group_name"):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            try:
+                await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            except Exception:
+                # Channel layer may be down (Redis restart) — a dropped
+                # group membership is harmless; the channel is closing anyway.
+                pass
 
     async def broadcast_message(self, event):
         """Handler for broadcast.message events from group_send."""
@@ -88,12 +131,22 @@ class WorkspaceConsumer(AsyncJsonWebsocketConsumer):
             await self.close(code=4001)
             return
 
+        # Authorization check — user must be a member of the workspace
+        is_member = await _user_is_workspace_member(user, self.workspace_id)
+        if not is_member:
+            await self.close(code=4403)
+            return
+
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
     async def disconnect(self, close_code):
         if hasattr(self, "group_name"):
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            try:
+                await self.channel_layer.group_discard(self.group_name, self.channel_name)
+            except Exception:
+                # Channel layer may be down (Redis restart) — harmless.
+                pass
 
     async def broadcast_message(self, event):
         await self.send_json({
