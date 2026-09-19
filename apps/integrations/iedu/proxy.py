@@ -38,6 +38,24 @@ def iedu_pk(value):
     return str(value).removeprefix("iedu_")
 
 
+def ts(value):
+    """Normalize iedu timestamps to ISO-8601.
+
+    iedu returns "DD/MM/YYYY HH:MM:SS" (e.g. "19/09/2026 12:00:03") which
+    `new Date()` cannot parse in browsers — renders as "Invalid Date".
+    Anything already ISO (or empty) passes through unchanged.
+    """
+    if not value or not isinstance(value, str):
+        return value
+    from datetime import datetime
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(value.strip(), fmt).isoformat()
+        except ValueError:
+            continue
+    return value
+
+
 def client_for_user(user):
     """First workspace of this user that has an active iedu integration."""
     from apps.inbox.views import get_user_workspaces
@@ -78,7 +96,7 @@ def conv_to_cp(c):
         "assigned_to": None,
         "assigned_to_name": (assigned or {}).get("name") or (assigned or {}).get("username") if isinstance(assigned, dict) else None,
         "labels": [_label_dict(l) for l in (c.get("labels") or [])],
-        "last_message_at": c.get("last_message_at"),
+        "last_message_at": ts(c.get("last_message_at")),
         "last_message_preview": c.get("last_message_preview") or "",
         "unread_count": c.get("unread_count") or 0,
         "is_complaint": False,
@@ -86,8 +104,8 @@ def conv_to_cp(c):
         "ai_enabled": False,
         "language": "en",
         "page_name": None,
-        "created_at": c.get("created_at"),
-        "updated_at": c.get("updated_at"),
+        "created_at": ts(c.get("created_at")),
+        "updated_at": ts(c.get("updated_at")),
         "external_id": f"iedu_{c['id']}",
     }
 
@@ -116,7 +134,7 @@ def msg_to_cp(m, conv_pk):
             "file_type": (m.get("message_type") or "File").lower(),
             "file_size": None,
             "mime_type": None,
-            "created_at": m.get("created_at"),
+            "created_at": ts(m.get("created_at")),
         })
 
     return {
@@ -133,8 +151,8 @@ def msg_to_cp(m, conv_pk):
         "reply_to": None,
         "ai_metadata": {"iedu_sender": _sender_name(m)} if st == "staff" else {},
         "is_read": True,
-        "created_at": m.get("created_at"),
-        "updated_at": m.get("created_at"),
+        "created_at": ts(m.get("created_at")),
+        "updated_at": ts(m.get("created_at")),
     }
 
 
@@ -155,5 +173,7 @@ def list_conversations(client, page=1, limit=30, search="", status="", unread=Fa
 def get_detail(client, conv_pk, limit=100):
     """Return (conversation_dict, [message_dicts oldest-first])."""
     conv, msgs = client.get_messages(conv_pk, limit=limit)
-    ordered = sorted(msgs, key=lambda m: m.get("created_at") or "")
+    # Sort on normalized timestamps — raw iedu "DD/MM/YYYY" strings sort
+    # incorrectly (day-of-month first).
+    ordered = sorted(msgs, key=lambda m: ts(m.get("created_at")) or "")
     return conv_to_cp(conv) if conv else None, [msg_to_cp(m, conv_pk) for m in ordered]
