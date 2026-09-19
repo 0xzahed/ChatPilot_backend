@@ -122,30 +122,44 @@ class ConversationListView(generics.ListAPIView):
         return qs
 
     def list(self, request, *args, **kwargs):
-        response = super().list(request, *args, **kwargs)
+        from rest_framework.exceptions import NotFound
+        try:
+            response = super().list(request, *args, **kwargs)
+        except NotFound:
+            # Local page out of range — treat as empty so merged iedu pages
+            # (which may have many more pages) still serve correctly.
+            response = None
         # Merge live iedu support-chat conversations (proxy — not stored in DB)
         channel = request.query_params.get("channel")
         if channel and channel != "website":
+            if response is None:
+                raise NotFound()
             return response
         from apps.integrations.iedu.proxy import client_for_user, list_conversations
         client = client_for_user(request.user)
         if not client:
+            if response is None:
+                raise NotFound()
             return response
         try:
             page = int(request.query_params.get("page", 1) or 1)
+            limit = int(request.query_params.get("limit", 20) or 20)
             items, iedu_meta = list_conversations(
                 client,
                 page=page,
+                limit=limit,
                 search=request.query_params.get("search", ""),
                 status=request.query_params.get("status", ""),
                 unread=request.query_params.get("unread") == "true",
             )
         except Exception:
+            if response is None:
+                raise NotFound()
             return response
 
         # The toolkit paginator renders `data` from the queryset — rebuild the
         # envelope ourselves so merged iedu items reach the client.
-        rd = response.data
+        rd = response.data if response is not None else {}
         if isinstance(rd, dict):
             local_items = rd.get("results") or rd.get("data") or []
             if not isinstance(local_items, list):
@@ -157,7 +171,6 @@ class ConversationListView(generics.ListAPIView):
         merged = list(local_items) + items
         merged.sort(key=lambda c: c.get("last_message_at") or "", reverse=True)
         total = local_count + (iedu_meta.get("total_count") or len(items))
-        limit = int(request.query_params.get("limit", 20) or 20)
         return Response({
             "success": True,
             "message": "Success",
