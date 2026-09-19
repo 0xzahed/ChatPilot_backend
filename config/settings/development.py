@@ -2,9 +2,10 @@ from .base import *  # noqa: F401,F403
 
 DEBUG = True
 
-# Dev-only throwaway encryption key — never use in production.
+# Dev-only throwaway encryption key — never use in production. Matches the
+# legacy dev value so pre-existing encrypted credentials still decrypt.
 CREDENTIAL_ENCRYPTION_KEY = env(
-    "CREDENTIAL_ENCRYPTION_KEY", default="dev-only-insecure-encryption-key-32b!"
+    "CREDENTIAL_ENCRYPTION_KEY", default="openchat-dev-encryption-key-32b!"
 )
 ALLOWED_HOSTS = ["*"]
 

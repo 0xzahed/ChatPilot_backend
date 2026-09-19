@@ -241,7 +241,10 @@ if not CREDENTIAL_ENCRYPTION_KEY:
             "development-only key. Never run with DEBUG=True in production.",
             stacklevel=2,
         )
-        CREDENTIAL_ENCRYPTION_KEY = "dev-only-insecure-encryption-key-32b!"
+        # NOTE: this legacy dev value is intentionally preserved — existing
+        # dev databases have credentials encrypted with it. It is unusable
+        # outside DEBUG=True.
+        CREDENTIAL_ENCRYPTION_KEY = "openchat-dev-encryption-key-32b!"
     else:
         raise ImproperlyConfigured(
             "Set the CREDENTIAL_ENCRYPTION_KEY environment variable"
