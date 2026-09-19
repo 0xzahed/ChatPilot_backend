@@ -14,7 +14,7 @@ from rest_framework import exceptions
 from rest_framework.request import Request
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-ACCESS_COOKIE = getattr(settings, "AUTH_COOKIE_ACCESS_NAME", "access_token")
+ACCESS_COOKIE = getattr(settings, "AUTH_COOKIE_ACCESS_NAME", "cp_access")
 CSRF_HEADER = "HTTP_X_REQUESTED_WITH"
 
 

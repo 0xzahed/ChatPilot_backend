@@ -11,6 +11,7 @@ import uuid
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
@@ -142,7 +143,7 @@ class WebSocketAuthzTest(TransactionTestCase):
         user = _user("ck@x.com")
         ws = _workspace_with_member(user)
         connected, _ = self._connect(
-            f"/ws/workspaces/{ws.id}/", cookies={"access_token": self._token_for(user)}
+            f"/ws/workspaces/{ws.id}/", cookies={settings.AUTH_COOKIE_ACCESS_NAME: self._token_for(user)}
         )
         self.assertTrue(connected)
 
@@ -315,8 +316,8 @@ class CookieAuthTest(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.content)
-        access = resp.cookies.get("access_token")
-        refresh = resp.cookies.get("refresh_token")
+        access = resp.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME)
+        refresh = resp.cookies.get(settings.AUTH_COOKIE_REFRESH_NAME)
         self.assertIsNotNone(access)
         self.assertIsNotNone(refresh)
         self.assertTrue(access["httponly"])
@@ -362,7 +363,7 @@ class CookieAuthTest(TestCase):
         )
         self.assertEqual(r.status_code, 200)
         # Cookies cleared
-        self.assertEqual(r.cookies["access_token"].value, "")
+        self.assertEqual(r.cookies[settings.AUTH_COOKIE_ACCESS_NAME].value, "")
 
     def test_cookie_refresh_flow(self):
         resp = self.client.post(
@@ -377,7 +378,7 @@ class CookieAuthTest(TestCase):
             HTTP_X_REQUESTED_WITH="XMLHttpRequest",
         )
         self.assertEqual(r.status_code, 200)
-        self.assertIsNotNone(r.cookies.get("access_token"))
+        self.assertIsNotNone(r.cookies.get(settings.AUTH_COOKIE_ACCESS_NAME))
 
     def test_ws_ticket_issue_and_single_use(self):
         self.client.force_authenticate(user=self.user)

@@ -80,7 +80,7 @@ class JwtAuthMiddleware:
             from django.conf import settings
 
             cookie_token = _parse_cookies(scope).get(
-                getattr(settings, "AUTH_COOKIE_ACCESS_NAME", "access_token")
+                getattr(settings, "AUTH_COOKIE_ACCESS_NAME", "cp_access")
             )
             if cookie_token:
                 user = await get_user_from_token(cookie_token)

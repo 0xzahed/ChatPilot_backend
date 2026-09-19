@@ -191,8 +191,12 @@ CORS_ALLOW_CREDENTIALS = True
 # The SPA stores tokens in HttpOnly SameSite=Lax cookies instead of
 # localStorage. Secure flag is env-driven: required True in production
 # (HTTPS), False only for plain-HTTP development.
-AUTH_COOKIE_ACCESS_NAME = "access_token"
-AUTH_COOKIE_REFRESH_NAME = "refresh_token"
+# Namespaced cookie names — this host is shared with other apps (iedu runs on
+# the same IP:port range). Cookies are port-independent, so generic names like
+# "access_token" would collide with the other app's session cookies and
+# silently log users out.
+AUTH_COOKIE_ACCESS_NAME = env("AUTH_COOKIE_ACCESS_NAME", default="cp_access")
+AUTH_COOKIE_REFRESH_NAME = env("AUTH_COOKIE_REFRESH_NAME", default="cp_refresh")
 AUTH_COOKIE_SECURE = env.bool("AUTH_COOKIE_SECURE", default=False)
 AUTH_COOKIE_SAMESITE = "Lax"
 
