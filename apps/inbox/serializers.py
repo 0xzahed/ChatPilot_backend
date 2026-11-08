@@ -99,11 +99,11 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = [
             "id", "conversation", "sender_type", "direction", "message_type",
-            "content", "status", "attachments", "sender_name", "sent_by",
-            "reply_to", "reply_to_content", "ai_metadata", "is_read",
+            "content", "status", "external_id", "attachments", "sender_name",
+            "sent_by", "reply_to", "reply_to_content", "ai_metadata", "is_read",
             "created_at", "updated_at",
         ]
-        read_only_fields = ["id", "sender_name", "created_at", "updated_at"]
+        read_only_fields = ["id", "sender_name", "created_at", "updated_at", "external_id"]
 
     def get_sender_name(self, obj):
         if obj.sender_type == "customer":

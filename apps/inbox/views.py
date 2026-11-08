@@ -334,14 +334,20 @@ class SendMessageView(APIView):
         # (website convs are skipped unless they are iedu-bridged)
         if not is_note and (conv.channel != "website" or conv.config.get("bridge") == "iedu"):
             try:
-                _send_to_channel(conv, content, msg_type)
+                result = _send_to_channel(conv, content, msg_type)
                 message.status = "delivered"
-                message.save(update_fields=["status"])
+                if result is not None and getattr(result, "external_message_id", ""):
+                    message.external_id = result.external_message_id
+                message.save(update_fields=["status", "external_id"])
             except Exception as e:
                 logger.error(f"Failed to send message to {conv.channel}: {e}")
                 message.status = "failed"
-                message.save(update_fields=["status"])
-                # Still return success since message is saved in DB
+                message.ai_metadata["send_error"] = str(e)
+                message.save(update_fields=["status", "ai_metadata"])
+                # The message row is kept (not hidden) so the agent sees the
+                # failed attempt in the thread — the API response's
+                # status="failed" is what the frontend uses to show it as
+                # failed rather than claiming success.
 
         # Update conversation preview
         conv.last_message_at = timezone.now()
@@ -410,11 +416,16 @@ def _send_to_channel(conversation, content, message_type="text"):
     if not channel:
         raise Exception(f"No channel identity found for customer on {conversation.channel}")
 
-    # Get the integration
+    # Get the integration — must filter on status="connected" too: a
+    # workspace can have multiple abandoned "pending" OAuth attempts that
+    # are also is_active=True but have no page token configured, and with
+    # UUID primary keys .first() is not guaranteed to pick the real
+    # connected one without this filter.
     integration = Integration.objects.filter(
         workspace=conversation.workspace,
         integration_type=conversation.channel,
         is_active=True,
+        status="connected",
     ).first()
     if not integration:
         raise Exception(f"No active {conversation.channel} integration found")
@@ -446,7 +457,7 @@ def _send_to_channel(conversation, content, message_type="text"):
         page_id=conversation.config.get("page_id", ""),
     )
     if not result.success:
-        raise Exception("Provider returned failure")
+        raise Exception(result.error or "Provider returned failure")
     return result
 
 
