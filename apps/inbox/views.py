@@ -119,6 +119,21 @@ class ConversationListView(generics.ListAPIView):
         if page_id:
             qs = qs.filter(config__page_id=page_id)
 
+        # Hide conversations belonging to a Facebook Page that's no longer
+        # connected — data is never deleted, just excluded from the default
+        # view. Reconnecting the same Page (same page_id) makes it reappear.
+        from apps.integrations.models import Integration
+        connected_page_ids = set()
+        for integration in Integration.objects.filter(
+            workspace_id__in=ws_ids, integration_type="facebook", status="connected"
+        ):
+            for p in integration.get_credentials().get("pages", []):
+                if p.get("page_id"):
+                    connected_page_ids.add(p.get("page_id"))
+        qs = qs.exclude(
+            Q(channel="facebook") & ~Q(config__page_id__in=list(connected_page_ids))
+        )
+
         return qs
 
     def list(self, request, *args, **kwargs):
