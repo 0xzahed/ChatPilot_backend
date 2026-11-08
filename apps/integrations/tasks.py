@@ -24,7 +24,7 @@ def process_incoming_messages(webhook_event_id, source):
     try:
         # Get the provider for this source
         integration = Integration.objects.filter(
-            workspace=event.workspace, integration_type=source, is_active=True
+            workspace=event.workspace, integration_type=source, is_active=True, status="connected"
         ).first() if event.workspace else None
 
         if source == "facebook":
@@ -126,3 +126,29 @@ def process_incoming_messages(webhook_event_id, source):
             event.status = "dead_letter"
 
     event.save()
+
+
+@shared_task
+def auto_sync_facebook_integrations():
+    """Periodic safety-net sync for every connected Facebook integration.
+
+    Real-time delivery goes through the webhook; this just catches anything
+    missed (e.g. a webhook delivery that failed) so the inbox self-heals
+    without someone needing to click the manual Sync button.
+    """
+    from apps.integrations.models import Integration
+    from apps.integrations.views import sync_facebook_historical_data
+
+    integrations = Integration.objects.filter(
+        integration_type="facebook", is_active=True, status="connected"
+    )
+    for integration in integrations:
+        try:
+            result = sync_facebook_historical_data(integration)
+            if result:
+                logger.info(
+                    f"Auto-sync facebook integration {integration.id}: "
+                    f"{result['synced_convs']} new conversations, {result['synced_msgs']} new messages"
+                )
+        except Exception as e:
+            logger.error(f"Auto-sync failed for facebook integration {integration.id}: {e}")

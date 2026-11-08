@@ -102,6 +102,12 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = "UTC"
+CELERY_BEAT_SCHEDULE = {
+    "auto-sync-facebook-integrations": {
+        "task": "apps.integrations.tasks.auto_sync_facebook_integrations",
+        "schedule": 300.0,  # every 5 minutes — safety net alongside real-time webhooks
+    },
+}
 
 CACHES = {
     "default": {
