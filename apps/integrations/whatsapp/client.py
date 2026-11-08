@@ -96,7 +96,7 @@ class WhatsAppProvider(BaseIntegrationProvider):
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
         # WhatsApp uses Meta OAuth
         return (
-            f"https://www.facebook.com/v20.0/dialog/oauth"
+            f"https://www.facebook.com/v23.0/dialog/oauth"
             f"?client_id={settings.META_APP_ID}"
             f"&redirect_uri={redirect_uri}&state={state}"
         )

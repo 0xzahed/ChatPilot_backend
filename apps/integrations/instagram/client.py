@@ -11,7 +11,7 @@ from ..base.provider import BaseIntegrationProvider, IncomingMessage, OutgoingRe
 from ..base.exceptions import IntegrationNotConfiguredError
 
 logger = logging.getLogger(__name__)
-GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
+GRAPH_API_BASE = "https://graph.facebook.com/v23.0"
 
 
 class InstagramProvider(BaseIntegrationProvider):
@@ -71,7 +71,7 @@ class InstagramProvider(BaseIntegrationProvider):
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
         return (
-            f"https://www.facebook.com/v20.0/dialog/oauth"
+            f"https://www.facebook.com/v23.0/dialog/oauth"
             f"?client_id={settings.META_APP_ID}"
             f"&redirect_uri={redirect_uri}"
             f"&state={state}"
