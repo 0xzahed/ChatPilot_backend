@@ -16,7 +16,7 @@ from ..base.exceptions import IntegrationNotConfiguredError
 
 logger = logging.getLogger(__name__)
 
-GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
+GRAPH_API_BASE = "https://graph.facebook.com/v23.0"
 
 
 class FacebookProvider(BaseIntegrationProvider):
@@ -59,7 +59,13 @@ class FacebookProvider(BaseIntegrationProvider):
         try:
             with httpx.Client(timeout=30) as client:
                 resp = client.post(url, params=params, json=payload)
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    logger.error(f"Facebook send error: {resp.status_code} {resp.text}")
+                    fb_error = resp.json().get("error", {})
+                    return OutgoingResult(
+                        success=False,
+                        error=fb_error.get("message", resp.text),
+                    )
                 data = resp.json()
                 return OutgoingResult(success=True, external_message_id=data.get("message_id", ""))
         except Exception as e:
@@ -126,7 +132,7 @@ class FacebookProvider(BaseIntegrationProvider):
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
         return (
-            f"https://www.facebook.com/v20.0/dialog/oauth"
+            f"https://www.facebook.com/v23.0/dialog/oauth"
             f"?client_id={settings.META_APP_ID}"
             f"&redirect_uri={redirect_uri}"
             f"&state={state}"
@@ -173,39 +179,45 @@ class FacebookProvider(BaseIntegrationProvider):
                         "page_access_token": page.get("access_token", ""),
                     })
 
-                # New Pages Experience: /me/accounts may return empty,
-                # but granular_scopes in debug_token has target_ids (page IDs).
-                if not pages:
-                    try:
-                        debug_resp = client.get(
-                            f"{GRAPH_API_BASE}/debug_token",
-                            params={"input_token": user_token, "access_token": user_token},
-                        )
-                        debug_data = debug_resp.json().get("data", {})
-                        granular = debug_data.get("granular_scopes", [])
-                        page_ids = set()
-                        for gs in granular:
-                            for tid in gs.get("target_ids", []):
-                                page_ids.add(tid)
+                # New Pages Experience: some pages are granted via the newer
+                # per-page permission picker and only show up in granular_scopes
+                # (debug_token), not in /me/accounts. A user can have pages from
+                # BOTH mechanisms at once, so always check granular_scopes too —
+                # not just when /me/accounts came back empty — and merge by page_id.
+                known_ids = {p["page_id"] for p in pages}
+                try:
+                    debug_resp = client.get(
+                        f"{GRAPH_API_BASE}/debug_token",
+                        params={"input_token": user_token, "access_token": user_token},
+                    )
+                    debug_data = debug_resp.json().get("data", {})
+                    granular = debug_data.get("granular_scopes", [])
+                    page_ids = set()
+                    for gs in granular:
+                        for tid in gs.get("target_ids", []):
+                            page_ids.add(tid)
 
-                        for pid in page_ids:
-                            page_resp = client.get(
-                                f"{GRAPH_API_BASE}/{pid}",
-                                params={
-                                    "access_token": user_token,
-                                    "fields": "id,name,access_token",
-                                },
-                            )
-                            if page_resp.status_code == 200:
-                                pdata = page_resp.json()
-                                if pdata.get("access_token"):
-                                    pages.append({
-                                        "page_id": pdata["id"],
-                                        "page_name": pdata.get("name", ""),
-                                        "page_access_token": pdata["access_token"],
-                                    })
-                    except Exception as e:
-                        logger.warning(f"Facebook OAuth: granular scope page lookup failed: {e}")
+                    for pid in page_ids:
+                        if pid in known_ids:
+                            continue
+                        page_resp = client.get(
+                            f"{GRAPH_API_BASE}/{pid}",
+                            params={
+                                "access_token": user_token,
+                                "fields": "id,name,access_token",
+                            },
+                        )
+                        if page_resp.status_code == 200:
+                            pdata = page_resp.json()
+                            if pdata.get("access_token"):
+                                pages.append({
+                                    "page_id": pdata["id"],
+                                    "page_name": pdata.get("name", ""),
+                                    "page_access_token": pdata["access_token"],
+                                })
+                                known_ids.add(pdata["id"])
+                except Exception as e:
+                    logger.warning(f"Facebook OAuth: granular scope page lookup failed: {e}")
 
                 logger.info(f"Facebook OAuth: found {len(pages)} pages")
                 return {
@@ -215,6 +227,30 @@ class FacebookProvider(BaseIntegrationProvider):
         except Exception as e:
             logger.error(f"Facebook OAuth error: {e}")
             raise
+
+    def subscribe_page(self, page_id: str, page_access_token: str) -> bool:
+        """Subscribe this Page to the app's webhook events.
+
+        Meta requires this per-Page call in addition to the App-level webhook
+        config — without it, Meta never sends events for the page even if the
+        App's webhook callback is verified.
+        """
+        url = f"{GRAPH_API_BASE}/{page_id}/subscribed_apps"
+        params = {
+            "access_token": page_access_token,
+            "subscribed_fields": "messages,messaging_postbacks,message_deliveries,message_reads",
+        }
+        try:
+            with httpx.Client(timeout=30) as client:
+                resp = client.post(url, params=params)
+                resp.raise_for_status()
+                success = bool(resp.json().get("success"))
+                if not success:
+                    logger.error(f"Facebook: subscribed_apps call for page {page_id} returned {resp.json()}")
+                return success
+        except Exception as e:
+            logger.error(f"Facebook: failed to subscribe page {page_id} to webhooks: {e}")
+            return False
 
     def fetch_historical_conversations(self) -> list[dict]:
         """Fetch past Messenger conversations from all connected Facebook Pages.
@@ -328,6 +364,10 @@ class MockFacebookProvider(BaseIntegrationProvider):
         if mode == "subscribe" and token == settings.META_VERIFY_TOKEN:
             return payload.get("hub.challenge", "")
         return ""
+
+    def subscribe_page(self, page_id: str, page_access_token: str) -> bool:
+        logger.info(f"[MockFacebook] Simulated subscribe for page {page_id}")
+        return True
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
         return f"{settings.FRONTEND_URL}/integrations/facebook/callback?mock=true&state={state}"
