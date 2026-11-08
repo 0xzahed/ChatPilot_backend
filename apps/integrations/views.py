@@ -125,15 +125,24 @@ class IntegrationCallbackView(APIView):
     permission_classes = []  # Public — Facebook redirects here without auth
 
     def get(self, request, integration_type):
+        import urllib.parse
+
         code = request.query_params.get("code", "")
         state = request.query_params.get("state", "")
-        error = request.query_params.get("error", "")
+        # Facebook reports some failures (e.g. "domain not in App Domains")
+        # as error_code/error_message instead of the standard OAuth "error"
+        # param — check both, or the real reason gets masked as a generic
+        # "missing_params" with no way to tell what actually went wrong.
+        error = (
+            request.query_params.get("error", "")
+            or request.query_params.get("error_message", "")
+        )
 
         from django.conf import settings
         frontend_url = settings.FRONTEND_URL.rstrip("/")
 
         if error:
-            return redirect(f"{frontend_url}/integrations?error={error}")
+            return redirect(f"{frontend_url}/integrations?error={urllib.parse.quote(error)}")
 
         if not code or not state:
             return redirect(f"{frontend_url}/integrations?error=missing_params")
@@ -245,10 +254,23 @@ class IntegrationSelectPagesView(APIView):
             {"page_id": p["page_id"], "page_name": p["page_name"]} for p in selected_pages
         ]
         integration.save(update_fields=["credentials_encrypted", "status", "is_active", "config"])
+
+        # Subscribe each selected Page to the app's webhook — without this,
+        # Meta never sends message events for the page even though the
+        # App-level webhook callback is verified.
+        from .facebook.client import get_facebook_provider
+        provider = get_facebook_provider(integration)
+        subscribe_results = {}
+        for p in selected_pages:
+            subscribe_results[p["page_id"]] = provider.subscribe_page(
+                p["page_id"], p.get("page_access_token", "")
+            )
+
         return api_success(data={
             "status": "connected",
             "integration": IntegrationSerializer(integration).data,
             "connected_pages": integration.config["connected_pages"],
+            "webhook_subscriptions": subscribe_results,
         }, message="Integration connected")
 
 
@@ -328,19 +350,42 @@ class IntegrationSyncView(APIView):
 
 
 def _sync_facebook_historical(integration):
-    """Fetch historical conversations/messages from Facebook and save to DB."""
+    """Fetch historical conversations/messages from Facebook and save to DB.
+
+    Thin API wrapper — see sync_facebook_historical_data() for the reusable
+    core, also called by the periodic auto-sync Celery task.
+    """
+    from .facebook.client import get_facebook_provider
+
+    provider = get_facebook_provider(integration)
+    if not hasattr(provider, "fetch_historical_conversations"):
+        return api_error("Historical sync not supported.", code="BAD_REQUEST", status_code=400)
+
+    result = sync_facebook_historical_data(integration)
+    if result is None:
+        return api_success(data={"status": "completed", "synced": 0}, message="No conversations found on Facebook Page")
+    return api_success(data={
+        "status": "completed",
+        "synced_conversations": result["synced_convs"],
+        "synced_messages": result["synced_msgs"],
+        "total_threads": result["total_threads"],
+    }, message="Success")
+
+
+def sync_facebook_historical_data(integration):
+    """Core Facebook historical sync logic — fetches conversations/messages
+    from the Graph API and saves them to the DB. Returns a stats dict, or
+    None if there was nothing to sync. Shared by the manual Sync button
+    (IntegrationSyncView) and the periodic auto-sync Celery task."""
     from .facebook.client import get_facebook_provider
     from apps.inbox.models import Conversation, Message
     from apps.customers.models import Customer, CustomerChannel
     from django.utils import timezone
 
     provider = get_facebook_provider(integration)
-    if not hasattr(provider, "fetch_historical_conversations"):
-        return api_error("Historical sync not supported.", code="BAD_REQUEST", status_code=400)
-
     threads = provider.fetch_historical_conversations()
     if not threads:
-        return api_success(data={"status": "completed", "synced": 0}, message="No conversations found on Facebook Page")
+        return None
 
     workspace = integration.workspace
     creds = integration.get_credentials()
@@ -455,12 +500,11 @@ def _sync_facebook_historical(integration):
     integration.last_synced_at = timezone.now()
     integration.save(update_fields=["last_synced_at"])
 
-    return api_success(data={
-        "status": "completed",
-        "synced_conversations": synced_convs,
-        "synced_messages": synced_msgs,
+    return {
+        "synced_convs": synced_convs,
+        "synced_msgs": synced_msgs,
         "total_threads": len(threads),
-        }, message="Success")
+    }
 
 
 class WhatsAppSetupView(APIView):
