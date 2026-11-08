@@ -118,9 +118,14 @@ class FacebookWebhookView(View):
 
         integration = _get_facebook_integration(recipient_page_id)
 
-        # Idempotency check — skip if we already have this external_id
-        external_id = payload.get("entry", [{}])[0].get("id", "") if payload.get("entry") else ""
-        if external_id and WebhookEvent.objects.filter(external_id=external_id, source="facebook").exists():
+        # Idempotency check — skip if we've already stored this exact delivery.
+        # NOTE: entry[0]["id"] is the Page ID (constant for every delivery to
+        # that page), not a per-event id, so it must never be used as the
+        # dedup key — doing so silently drops every delivery after the first.
+        # Hash the raw body instead: identical on genuine Meta retries,
+        # distinct for every real new event.
+        external_id = _hashlib.sha256(raw_body).hexdigest()
+        if WebhookEvent.objects.filter(external_id=external_id, source="facebook").exists():
             return JsonResponse({"status": "duplicate"})
 
         # Store webhook event for idempotency and replay
@@ -332,19 +337,27 @@ def _enrich_sender_names(provider, messages):
             if not token:
                 continue
             try:
+                # Note: Messenger PSIDs use the "profile_pic" field, not the
+                # generic Graph API User node's "picture" field — "picture"
+                # silently returns nothing for PSIDs without logging an error.
                 resp = client.get(
-                    f"https://graph.facebook.com/v20.0/{sid}",
-                    params={"access_token": token, "fields": "name,first_name,last_name,picture{url}"},
+                    f"https://graph.facebook.com/v23.0/{sid}",
+                    params={"access_token": token, "fields": "name,first_name,last_name,profile_pic"},
                 )
                 if resp.status_code == 200:
                     data = resp.json()
                     name = data.get("name", "")
-                    pic_url = data.get("picture", {}).get("data", {}).get("url", "")
+                    pic_url = data.get("profile_pic", "")
                     for msg in messages:
                         if msg.sender_external_id == sid:
                             if name:
                                 msg.sender_name = name
                             if pic_url:
                                 msg.sender_pic = pic_url
+                else:
+                    logger.warning(
+                        f"Facebook profile lookup for sender {sid} (page {page_id}) "
+                        f"returned {resp.status_code}: {resp.text}"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to fetch name for sender {sid} (page {page_id}): {e}")
