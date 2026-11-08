@@ -3,7 +3,7 @@
  * Embeddable chat widget for external websites.
  *
  * Usage:
- *   <script src="https://chatpilot.devtosoft.tech/static/webchat/widget.js"
+ *   <script src="https://chatpilot.ieducationbd.com/static/webchat/widget.js"
  *           data-workspace="WORKSPACE_ID" async></script>
  */
 (function () {
@@ -26,7 +26,7 @@
       var u = new URL(src, window.location.href);
       return u.origin + "/api";
     } catch (e) {
-      return "https://chatpilot.devtosoft.tech/api";
+      return window.location.origin + "/api";
     }
   })();
   var config = null;
