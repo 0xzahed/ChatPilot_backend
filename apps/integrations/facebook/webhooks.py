@@ -192,7 +192,7 @@ def _process_webhook_sync(webhook_event, integration, source):
 
         for incoming in incoming_messages:
             # Skip empty messages (no text and no attachment)
-            if not incoming.content and not incoming.attachment_url:
+            if not incoming.content and not incoming.attachment_url and not getattr(incoming, "attachments", None):
                 continue
 
             # Find or create customer (scoped to workspace)
@@ -265,9 +265,15 @@ def _process_webhook_sync(webhook_event, integration, source):
                 status="sent",
             )
 
+            # Store incoming media (image / voice / video / file) locally
+            if getattr(incoming, "attachments", None):
+                from apps.integrations.facebook.inbound import save_incoming_attachments
+                save_incoming_attachments(message, incoming)
+
             # Update conversation
+            from apps.integrations.facebook.inbound import preview_for
             conversation.last_message_at = timezone.now()
-            conversation.last_message_preview = incoming.content[:100]
+            conversation.last_message_preview = preview_for(incoming)
             conversation.unread_count += 1
             conversation.save(update_fields=["last_message_at", "last_message_preview", "unread_count"])
 
@@ -303,61 +309,11 @@ def _process_webhook_sync(webhook_event, integration, source):
 
 
 def _enrich_sender_names(provider, messages):
-    """Fetch sender names and profile pictures from Facebook Graph API.
+    """Fetch sender names and profile pictures from the Graph API.
 
-    Uses the correct Page access token for each message by looking up the
-    Page ID on the incoming message against the integration's configured pages.
+    Delegates to facebook.inbound so the Celery task and this sync path share
+    one implementation (right Page token, plus a conversations-API fallback).
     """
-    import httpx
-    from apps.integrations.models import Integration
+    from apps.integrations.facebook.inbound import enrich_senders
+    enrich_senders(messages)
 
-    integration = Integration.objects.filter(
-        integration_type="facebook", is_active=True, status="connected"
-    ).first()
-    if not integration:
-        return
-
-    creds = integration.get_credentials()
-    pages = creds.get("pages", [])
-    # Build a page_id -> token map for per-page token selection
-    page_token_map = {p.get("page_id", ""): p.get("page_access_token", "") for p in pages}
-    fallback_token = pages[0].get("page_access_token", "") if pages else creds.get("page_access_token", "")
-    if not fallback_token and not page_token_map:
-        return
-
-    # Collect unique (sender_id, page_id) pairs so we use the right token per page
-    sender_page_pairs = set()
-    for msg in messages:
-        if msg.sender_external_id:
-            sender_page_pairs.add((msg.sender_external_id, msg.page_id or ""))
-
-    with httpx.Client(timeout=10) as client:
-        for sid, page_id in sender_page_pairs:
-            token = page_token_map.get(page_id) or fallback_token
-            if not token:
-                continue
-            try:
-                # Note: Messenger PSIDs use the "profile_pic" field, not the
-                # generic Graph API User node's "picture" field — "picture"
-                # silently returns nothing for PSIDs without logging an error.
-                resp = client.get(
-                    f"https://graph.facebook.com/v23.0/{sid}",
-                    params={"access_token": token, "fields": "name,first_name,last_name,profile_pic"},
-                )
-                if resp.status_code == 200:
-                    data = resp.json()
-                    name = data.get("name", "")
-                    pic_url = data.get("profile_pic", "")
-                    for msg in messages:
-                        if msg.sender_external_id == sid:
-                            if name:
-                                msg.sender_name = name
-                            if pic_url:
-                                msg.sender_pic = pic_url
-                else:
-                    logger.warning(
-                        f"Facebook profile lookup for sender {sid} (page {page_id}) "
-                        f"returned {resp.status_code}: {resp.text}"
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to fetch name for sender {sid} (page {page_id}): {e}")

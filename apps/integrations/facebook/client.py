@@ -48,7 +48,7 @@ class FacebookProvider(BaseIntegrationProvider):
 
         if message_type == "text":
             payload = {"recipient": {"id": recipient_id}, "message": {"text": content}}
-        elif message_type in ("image", "file"):
+        elif message_type in ("image", "file", "audio", "video"):
             payload = {
                 "recipient": {"id": recipient_id},
                 "message": {"attachment": {"type": message_type, "payload": {"url": attachment_url}}},
@@ -72,6 +72,58 @@ class FacebookProvider(BaseIntegrationProvider):
             logger.error(f"Facebook send error: {e}")
             return OutgoingResult(success=False, error=str(e))
 
+    def send_attachment_file(self, recipient_id: str, file_bytes: bytes, filename: str, mime: str,
+                             message_type: str = "file", page_id: str = "") -> OutgoingResult:
+        """Upload a local file straight to Messenger (image / audio / video / file).
+
+        Uses multipart `filedata` so Facebook doesn't need a public URL for our
+        (authenticated) attachment endpoint.
+        """
+        import json as _json
+        token = self._get_page_token(page_id)
+        if not token:
+            raise IntegrationNotConfiguredError("Facebook page access token not configured.")
+        if message_type not in ("image", "audio", "video", "file"):
+            message_type = "file"
+        data = {
+            "recipient": _json.dumps({"id": recipient_id}),
+            "message": _json.dumps({"attachment": {"type": message_type, "payload": {"is_reusable": False}}}),
+            "messaging_type": "RESPONSE",
+        }
+        try:
+            with httpx.Client(timeout=120) as client:
+                resp = client.post(
+                    f"{GRAPH_API_BASE}/me/messages",
+                    params={"access_token": token},
+                    data=data,
+                    files={"filedata": (filename, file_bytes, mime or "application/octet-stream")},
+                )
+                if resp.status_code >= 400:
+                    logger.error(f"Facebook attachment send error: {resp.status_code} {resp.text}")
+                    fb_error = resp.json().get("error", {})
+                    return OutgoingResult(success=False, error=fb_error.get("message", resp.text))
+                return OutgoingResult(success=True, external_message_id=resp.json().get("message_id", ""))
+        except Exception as e:
+            logger.error(f"Facebook attachment send error: {e}")
+            return OutgoingResult(success=False, error=str(e))
+
+    def mark_seen(self, recipient_id: str, page_id: str = "") -> bool:
+        """Tell Messenger the Page has read the customer's messages ("Seen")."""
+        token = self._get_page_token(page_id)
+        if not token:
+            return False
+        try:
+            with httpx.Client(timeout=8) as client:
+                resp = client.post(
+                    f"{GRAPH_API_BASE}/me/messages",
+                    params={"access_token": token},
+                    json={"recipient": {"id": recipient_id}, "sender_action": "mark_seen"},
+                )
+                return resp.status_code < 400
+        except Exception as e:
+            logger.warning(f"Facebook mark_seen failed for {recipient_id}: {e}")
+            return False
+
     def process_webhook(self, payload: dict, headers: dict) -> list[IncomingMessage]:
         messages = []
         if payload.get("object") != "page":
@@ -87,12 +139,17 @@ class FacebookProvider(BaseIntegrationProvider):
                     msg_type = "text"
                     content = message.get("text", "")
                     attachment_url = ""
+                    attachments = []
 
-                    if "attachments" in message:
-                        for att in message["attachments"]:
-                            if att.get("type") in ("image", "file", "audio", "video"):
-                                msg_type = att["type"]
-                                attachment_url = att.get("payload", {}).get("url", "")
+                    for att in message.get("attachments", []) or []:
+                        att_type = att.get("type")
+                        url = (att.get("payload") or {}).get("url", "")
+                        if att_type in ("image", "file", "audio", "video") and url:
+                            attachments.append({"type": att_type, "url": url, "name": att.get("title", "")})
+
+                    if attachments:
+                        msg_type = attachments[0]["type"]
+                        attachment_url = attachments[0]["url"]
 
                     messages.append(IncomingMessage(
                         external_id=message.get("mid", messaging_event.get("message_id", "")),
@@ -104,6 +161,7 @@ class FacebookProvider(BaseIntegrationProvider):
                         attachment_url=attachment_url,
                         timestamp=messaging_event.get("timestamp", ""),
                         page_id=recipient_id,
+                        attachments=attachments,
                         raw_payload=messaging_event,
                     ))
 
@@ -370,7 +428,7 @@ class MockFacebookProvider(BaseIntegrationProvider):
         return True
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
-        return f"{settings.FRONTEND_URL}/integrations/facebook/callback?mock=true&state={state}"
+        return f"{settings.FRONTEND_URL}/integrations?callback=facebook&code=mock&state={state}"
 
     def handle_oauth_callback(self, code: str, redirect_uri: str) -> dict:
         return {

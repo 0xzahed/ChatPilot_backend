@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from apps.integrations.models import WebhookEvent
 from apps.integrations.serializers import WebhookEventSerializer
 from apps.inbox.views import get_user_workspaces
@@ -11,7 +12,7 @@ from common.api_response import api_error, api_success, api_paginated
 class WebhookEventListView(generics.ListAPIView):
     queryset = WebhookEvent.objects.none()
     serializer_class = WebhookEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -29,7 +30,7 @@ class WebhookEventListView(generics.ListAPIView):
 
 class WebhookEventDetailView(generics.RetrieveAPIView):
     serializer_class = WebhookEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -39,7 +40,7 @@ class WebhookEventDetailView(generics.RetrieveAPIView):
 
 
 class WebhookReplayView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, event_id):
         ws_ids = get_user_workspaces(request.user)

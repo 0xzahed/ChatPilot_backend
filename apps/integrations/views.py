@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from django.shortcuts import redirect
 import logging
 from .models import Integration, WebhookEvent, SyncLog
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 def get_integration_for_user(user, pk):
     """Fetch an integration only if the user is a member of its workspace."""
+    import uuid
+    try:
+        pk = uuid.UUID(str(pk))
+    except (ValueError, AttributeError, TypeError):
+        return None
     ws_ids = get_user_workspaces(user)
     return Integration.objects.filter(id=pk, workspace_id__in=ws_ids).first()
 
@@ -24,7 +30,7 @@ def get_integration_for_user(user, pk):
 class IntegrationListView(generics.ListCreateAPIView):
     queryset = Integration.objects.none()
     serializer_class = IntegrationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -50,7 +56,7 @@ class IntegrationListView(generics.ListCreateAPIView):
 
 class IntegrationDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = IntegrationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -62,7 +68,7 @@ class IntegrationDetailView(generics.RetrieveUpdateDestroyAPIView):
 class IntegrationConnectView(APIView):
     """Get OAuth URL for connecting an integration."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request, integration_type):
         ws_id = request.query_params.get("workspace_id")
@@ -157,7 +163,7 @@ class IntegrationCallbackView(APIView):
 class IntegrationCompleteView(APIView):
     """Complete OAuth flow — called by frontend with code & state after redirect."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, integration_type):
         code = request.data.get("code", "")
@@ -224,7 +230,7 @@ class IntegrationSelectPagesView(APIView):
     Saves page access tokens and marks the integration as connected.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, pk):
         integration = get_integration_for_user(request.user, pk)
@@ -275,7 +281,7 @@ class IntegrationSelectPagesView(APIView):
 
 
 class IntegrationDisconnectView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, pk):
         integration = get_integration_for_user(request.user, pk)
@@ -291,7 +297,7 @@ class IntegrationDisconnectView(APIView):
 class WebhookEventListView(generics.ListAPIView):
     queryset = WebhookEvent.objects.none()
     serializer_class = WebhookEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -305,7 +311,7 @@ class WebhookEventListView(generics.ListAPIView):
 
 
 class WebhookReplayView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, event_id):
         ws_ids = get_user_workspaces(request.user)
@@ -320,7 +326,7 @@ class WebhookReplayView(APIView):
 class SyncLogListView(generics.ListAPIView):
     queryset = SyncLog.objects.none()
     serializer_class = SyncLogSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -332,7 +338,7 @@ class SyncLogListView(generics.ListAPIView):
 class IntegrationSyncView(APIView):
     """Trigger a manual sync for Shopify/WooCommerce/Facebook."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, pk):
         integration = get_integration_for_user(request.user, pk)
@@ -513,7 +519,7 @@ class WhatsAppSetupView(APIView):
     WhatsApp Cloud API doesn't use OAuth — you need to manually provide
     the access token and phone number ID from Meta Business Manager.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request):
         ws_id = request.data.get("workspace_id")

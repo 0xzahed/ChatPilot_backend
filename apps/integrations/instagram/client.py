@@ -116,7 +116,7 @@ class MockInstagramProvider(BaseIntegrationProvider):
         return ""
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
-        return f"{settings.FRONTEND_URL}/integrations/instagram/callback?mock=true&state={state}"
+        return f"{settings.FRONTEND_URL}/integrations?callback=instagram&code=mock&state={state}"
 
     def handle_oauth_callback(self, code: str, redirect_uri: str) -> dict:
         return {"instagram_access_token": "mock_ig_token_abc123"}

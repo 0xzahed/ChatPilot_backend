@@ -62,7 +62,7 @@ class MockWooCommerceProvider(BaseIntegrationProvider):
         return ""
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
-        return f"{settings.FRONTEND_URL}/integrations/woocommerce/callback?mock=true&state={state}"
+        return f"{settings.FRONTEND_URL}/integrations?callback=woocommerce&code=mock&state={state}"
 
     def handle_oauth_callback(self, code: str, redirect_uri: str) -> dict:
         return {"store_url": "https://demo-store.example.com", "consumer_key": "mock_key", "consumer_secret": "mock_secret"}

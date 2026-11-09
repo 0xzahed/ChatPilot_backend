@@ -114,7 +114,7 @@ class MockShopifyProvider(BaseIntegrationProvider):
         return ""
 
     def get_auth_url(self, redirect_uri: str, state: str) -> str:
-        return f"{settings.FRONTEND_URL}/integrations/shopify/callback?mock=true&state={state}"
+        return f"{settings.FRONTEND_URL}/integrations?callback=shopify&code=mock&state={state}"
 
     def handle_oauth_callback(self, code: str, redirect_uri: str) -> dict:
         return {"shop_domain": "demo-shop.myshopify.com", "access_token": "mock_shopify_token"}

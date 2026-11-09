@@ -2,6 +2,7 @@ from rest_framework import generics, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from .models import Workspace, WorkspaceMembership, WorkspaceSettings
 from common.api_response import api_error, api_success, api_paginated
 from common.permissions import require_workspace_admin
@@ -12,12 +13,13 @@ from .serializers import (
 
 
 class WorkspaceListView(APIView):
-    permission_classes = [IsAuthenticated]
+    min_write_role = None  # any signed-in user may create their own workspace
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request):
         memberships = request.user.workspace_memberships.select_related("workspace").all()
         workspaces = [m.workspace for m in memberships]
-        return api_success(data=WorkspaceSerializer(workspaces, many=True).data, message="Workspaces fetched")
+        return api_success(data=WorkspaceSerializer(workspaces, many=True, context={"request": request}).data, message="Workspaces fetched")
 
     def post(self, request):
         serializer = CreateWorkspaceSerializer(data=request.data)
@@ -32,14 +34,15 @@ class WorkspaceListView(APIView):
             workspace=workspace, user=request.user, role="owner",
         )
         return api_success(data={
-            "workspace": WorkspaceSerializer(workspace).data,
+            "workspace": WorkspaceSerializer(workspace, context={"request": request}).data,
             "membership": WorkspaceMembershipSerializer(membership).data,
         }, message="Workspace created", status_code=201)
 
 
 class WorkspaceDetailView(generics.RetrieveUpdateAPIView):
     serializer_class = WorkspaceSerializer
-    permission_classes = [IsAuthenticated]
+    lookup_url_kwarg = "workspace_id"
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -49,7 +52,7 @@ class WorkspaceDetailView(generics.RetrieveUpdateAPIView):
 
 class WorkspaceMembersView(generics.ListCreateAPIView):
     serializer_class = WorkspaceMembershipSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
     queryset = WorkspaceMembership.objects.none()
 
     def get_queryset(self):
@@ -85,7 +88,7 @@ class WorkspaceMembersView(generics.ListCreateAPIView):
 
 class WorkspaceSettingsView(generics.RetrieveUpdateAPIView):
     serializer_class = WorkspaceSettingsSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_object(self):
         workspace_id = self.kwargs["workspace_id"]

@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from api_response_toolkit.exceptions import ForbiddenError
 from .models import AISettings, AIInstructions, AIEvent, AIUsage
 from .serializers import (
@@ -15,7 +16,7 @@ from apps.ai.models import AIEvent
 
 class AISettingsView(generics.RetrieveUpdateAPIView):
     serializer_class = AISettingsSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_object(self):
         ws_id = self.kwargs["workspace_id"]
@@ -28,7 +29,7 @@ class AISettingsView(generics.RetrieveUpdateAPIView):
 
 class AIInstructionsView(generics.RetrieveUpdateAPIView):
     serializer_class = AIInstructionsSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_object(self):
         ws_id = self.kwargs["workspace_id"]
@@ -42,7 +43,7 @@ class AIInstructionsView(generics.RetrieveUpdateAPIView):
 class AIEventListView(generics.ListAPIView):
     queryset = AIEvent.objects.none()
     serializer_class = AIEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -52,7 +53,7 @@ class AIEventListView(generics.ListAPIView):
 
 
 class AIUsageView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
@@ -65,7 +66,7 @@ class AIUsageView(APIView):
 class AITestView(APIView):
     """Test AI assistant with a sample message using current settings."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)

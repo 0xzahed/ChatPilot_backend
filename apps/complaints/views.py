@@ -1,5 +1,6 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission, resolve_create_workspace_id
 from django.db.models import Q
 from .models import Complaint
 from .serializers import ComplaintSerializer
@@ -10,7 +11,7 @@ from apps.complaints.models import Complaint
 class ComplaintListView(generics.ListCreateAPIView):
     queryset = Complaint.objects.none()
     serializer_class = ComplaintSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -37,16 +38,12 @@ class ComplaintListView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        ws_id = self.request.data.get("workspace_id")
-        ws_ids = get_user_workspaces(self.request.user)
-        if str(ws_id) not in ws_ids:
-            ws_id = ws_ids[0] if ws_ids else None
-        serializer.save(workspace_id=ws_id)
+        serializer.save(workspace_id=resolve_create_workspace_id(self.request))
 
 
 class ComplaintDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ComplaintSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):

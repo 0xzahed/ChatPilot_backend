@@ -44,7 +44,20 @@ def process_incoming_messages(webhook_event_id, source):
 
         incoming_messages = provider.process_webhook(event.payload, {})
 
+        # Fetch sender names from the Graph API for Facebook (same as the
+        # synchronous webhook path) so customers don't show as "Unknown".
+        if source == "facebook" and incoming_messages:
+            try:
+                from apps.integrations.facebook.inbound import enrich_senders
+                enrich_senders(incoming_messages)
+            except Exception as enrich_err:
+                logger.warning(f"Failed to enrich sender names: {enrich_err}")
+
         for incoming in incoming_messages:
+            # Skip empty messages (no text and no attachment)
+            if not incoming.content and not getattr(incoming, "attachment_url", "") and not getattr(incoming, "attachments", None):
+                continue
+
             # Find or create customer (scoped to workspace)
             workspace = event.workspace
             if not workspace and integration:
@@ -58,6 +71,9 @@ def process_incoming_messages(webhook_event_id, source):
 
             if customer_channel:
                 customer = customer_channel.customer
+                if source == "facebook":
+                    from apps.integrations.facebook.inbound import apply_sender_profile
+                    apply_sender_profile(customer, customer_channel, incoming)
             else:
                 customer = Customer.objects.create(
                     workspace=workspace,
@@ -69,6 +85,7 @@ def process_incoming_messages(webhook_event_id, source):
                     channel=incoming.channel,
                     external_id=incoming.sender_external_id,
                     display_name=incoming.sender_name,
+                    profile_url=getattr(incoming, "sender_pic", "") or "",
                 )
 
             # Find or create conversation
@@ -84,6 +101,16 @@ def process_incoming_messages(webhook_event_id, source):
                     external_id=incoming.external_id,
                 )
 
+            # Save page_id in conversation config — the inbox hides Facebook
+            # conversations without it, and replies need it to pick the Page.
+            if getattr(incoming, "page_id", ""):
+                conversation.config["page_id"] = incoming.page_id
+                conversation.save(update_fields=["config"])
+
+            # Skip duplicate messages
+            if incoming.external_id and Message.objects.filter(external_id=incoming.external_id).exists():
+                continue
+
             # Create message
             message = Message.objects.create(
                 conversation=conversation,
@@ -96,9 +123,15 @@ def process_incoming_messages(webhook_event_id, source):
                 status="sent",
             )
 
+            # Store incoming media (image / voice / video / file) locally
+            if getattr(incoming, "attachments", None):
+                from apps.integrations.facebook.inbound import save_incoming_attachments
+                save_incoming_attachments(message, incoming)
+
             # Update conversation
+            from apps.integrations.facebook.inbound import preview_for
             conversation.last_message_at = timezone.now()
-            conversation.last_message_preview = incoming.content[:100]
+            conversation.last_message_preview = preview_for(incoming)
             conversation.unread_count += 1
             conversation.save(update_fields=["last_message_at", "last_message_preview", "unread_count"])
 
@@ -152,3 +185,28 @@ def auto_sync_facebook_integrations():
                 )
         except Exception as e:
             logger.error(f"Auto-sync failed for facebook integration {integration.id}: {e}")
+
+
+@shared_task
+def mark_facebook_seen(conversation_id):
+    """Show "Seen" to the customer on Messenger once an agent opens the chat."""
+    from apps.customers.models import CustomerChannel
+    from apps.inbox.models import Conversation
+    from apps.integrations.models import Integration
+    from apps.integrations.facebook.client import get_facebook_provider
+
+    conv = Conversation.objects.filter(id=conversation_id, channel="facebook").select_related("customer").first()
+    if not conv:
+        return
+    cc = CustomerChannel.objects.filter(customer=conv.customer, channel="facebook").first()
+    page_id = (conv.config or {}).get("page_id", "")
+    if not cc or not page_id:
+        return
+    for integ in Integration.objects.filter(
+        workspace=conv.workspace, integration_type="facebook", is_active=True, status="connected"
+    ).order_by("-created_at"):
+        if any(p.get("page_id") == page_id for p in integ.get_credentials().get("pages", [])):
+            provider = get_facebook_provider(integ)
+            if hasattr(provider, "mark_seen"):
+                provider.mark_seen(cc.external_id, page_id)
+            return

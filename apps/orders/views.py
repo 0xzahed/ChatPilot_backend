@@ -4,6 +4,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from django.db.models import Q
 from .models import Order, OrderItem
 from .serializers import OrderSerializer, CreateOrderSerializer
@@ -16,7 +17,7 @@ from apps.orders.models import Order
 
 class OrderListView(generics.ListCreateAPIView):
     queryset = Order.objects.none()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -131,7 +132,7 @@ class OrderListView(generics.ListCreateAPIView):
 
 class OrderDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):

@@ -2,6 +2,7 @@ from rest_framework import generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from django.utils import timezone
 from datetime import timedelta
 from .models import Plan, Subscription, Invoice, UsageRecord
@@ -13,12 +14,12 @@ from apps.billing.models import Invoice
 
 class PlanListView(generics.ListAPIView):
     serializer_class = PlanSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
     queryset = Plan.objects.filter(is_active=True)
 
 
 class SubscriptionView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)
@@ -53,7 +54,7 @@ class SubscriptionView(APIView):
 class InvoiceListView(generics.ListAPIView):
     queryset = Invoice.objects.none()
     serializer_class = InvoiceSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -63,7 +64,7 @@ class InvoiceListView(generics.ListAPIView):
 
 
 class UsageView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request, workspace_id):
         ws_ids = get_user_workspaces(request.user)

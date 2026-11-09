@@ -7,7 +7,7 @@ ENV DJANGO_ENV=development
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev libjpeg-dev zlib1g-dev libffi-dev \
+    build-essential libpq-dev libjpeg-dev zlib1g-dev libffi-dev ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/base.txt requirements/base.txt
@@ -18,6 +18,6 @@ COPY . .
 
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 9001
+EXPOSE 8000
 
 CMD ["/app/entrypoint.sh"]

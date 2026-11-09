@@ -1,5 +1,6 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission, resolve_create_workspace_id
 from django.db.models import Q, Count, Subquery, OuterRef, CharField
 from .models import Product, ProductVariant, ProductImage, Category
 from .serializers import (
@@ -15,7 +16,7 @@ from apps.products.models import Category
 
 class ProductListView(generics.ListCreateAPIView):
     queryset = Product.objects.none()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -55,16 +56,12 @@ class ProductListView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        ws_id = self.request.data.get("workspace_id")
-        ws_ids = get_user_workspaces(self.request.user)
-        if str(ws_id) not in ws_ids:
-            ws_id = ws_ids[0] if ws_ids else None
-        serializer.save(workspace_id=ws_id)
+        serializer.save(workspace_id=resolve_create_workspace_id(self.request))
 
 
 class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ProductSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -76,7 +73,7 @@ class ProductDetailView(generics.RetrieveUpdateDestroyAPIView):
 class ProductVariantListView(generics.ListCreateAPIView):
     queryset = ProductVariant.objects.none()
     serializer_class = ProductVariantSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -101,7 +98,7 @@ class ProductVariantListView(generics.ListCreateAPIView):
 class ProductImageViewList(generics.ListCreateAPIView):
     queryset = ProductImage.objects.none()
     serializer_class = ProductImageSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -126,7 +123,7 @@ class ProductImageViewList(generics.ListCreateAPIView):
 class CategoryListView(generics.ListCreateAPIView):
     queryset = Category.objects.none()
     serializer_class = CategorySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -137,8 +134,4 @@ class CategoryListView(generics.ListCreateAPIView):
         )
 
     def perform_create(self, serializer):
-        ws_id = self.request.data.get("workspace_id")
-        ws_ids = get_user_workspaces(self.request.user)
-        if str(ws_id) not in ws_ids:
-            ws_id = ws_ids[0] if ws_ids else None
-        serializer.save(workspace_id=ws_id)
+        serializer.save(workspace_id=resolve_create_workspace_id(self.request))

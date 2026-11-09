@@ -4,6 +4,7 @@ from rest_framework import generics, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission
 from rest_framework.parsers import MultiPartParser, FormParser
 from django_filters.rest_framework import DjangoFilterBackend
 import logging
@@ -32,6 +33,11 @@ def get_user_workspaces(user):
 
 def get_conversation_for_user(user, conversation_id):
     """Fetch a conversation only if the user is a member of its workspace."""
+    import uuid
+    try:
+        conversation_id = uuid.UUID(str(conversation_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
     ws_ids = get_user_workspaces(user)
     return Conversation.objects.filter(id=conversation_id, workspace_id__in=ws_ids).first()
 
@@ -39,7 +45,7 @@ def get_conversation_for_user(user, conversation_id):
 class ConversationListView(generics.ListAPIView):
     queryset = Conversation.objects.none()
     serializer_class = ConversationListSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -203,7 +209,7 @@ class ConversationListView(generics.ListAPIView):
 
 class ConversationDetailView(generics.RetrieveUpdateAPIView):
     serializer_class = ConversationDetailSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
     lookup_field = "id"
     lookup_url_kwarg = "conversation_id"
 
@@ -262,7 +268,7 @@ class ConversationDetailView(generics.RetrieveUpdateAPIView):
 class MessageListView(generics.ListAPIView):
     queryset = Message.objects.none()
     serializer_class = MessageSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -293,11 +299,17 @@ class MessageListView(generics.ListAPIView):
         if conv and conv.unread_count > 0:
             conv.unread_count = 0
             conv.save(update_fields=["unread_count"])
+            if conv.channel == "facebook":
+                try:
+                    from apps.integrations.tasks import mark_facebook_seen
+                    mark_facebook_seen.delay(str(conv.id))
+                except Exception as e:  # Celery down — never block opening a chat
+                    logger.warning(f"Could not queue Messenger 'seen' for {conv.id}: {e}")
         return response
 
 
 class SendMessageView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         if str(conversation_id).startswith("iedu_"):
@@ -462,7 +474,7 @@ def _send_to_channel(conversation, content, message_type="text"):
 
 
 class AssignConversationView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         conv = get_conversation_for_user(request.user, conversation_id)
@@ -485,7 +497,7 @@ class AssignConversationView(APIView):
 
 
 class CloseConversationView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         if str(conversation_id).startswith("iedu_"):
@@ -512,7 +524,7 @@ class CloseConversationView(APIView):
 
 
 class ReopenConversationView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         if str(conversation_id).startswith("iedu_"):
@@ -535,7 +547,7 @@ class ReopenConversationView(APIView):
 
 
 class MarkUnreadView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         if str(conversation_id).startswith("iedu_"):
@@ -556,11 +568,13 @@ class MarkUnreadView(APIView):
 
 
 # ─── Attachment upload security policy ────────────────────────
-MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_ATTACHMENT_SIZE = 25 * 1024 * 1024  # 25 MB (Messenger's own limit)
 ALLOWED_ATTACHMENT_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp",
     ".pdf", ".txt", ".csv", ".doc", ".docx", ".xls", ".xlsx",
     ".mp3", ".mp4", ".zip",
+    # voice notes + video
+    ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".webm", ".mov", ".3gp",
 }
 ALLOWED_ATTACHMENT_MIME = {
     "image/jpeg", "image/png", "image/gif", "image/webp",
@@ -570,6 +584,8 @@ ALLOWED_ATTACHMENT_MIME = {
     "application/vnd.ms-excel",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "audio/mpeg", "video/mp4", "application/zip",
+    "audio/mp4", "audio/x-m4a", "audio/aac", "audio/wav", "audio/x-wav", "audio/ogg", "audio/webm",
+    "audio/opus", "video/webm", "video/quicktime", "video/3gpp",
     "application/x-zip-compressed", "application/octet-stream",
 }
 # Magic-byte signatures for the common binary types (prefix match)
@@ -586,7 +602,7 @@ def _validate_attachment(uploaded) -> str | None:
     import os
 
     if uploaded.size > MAX_ATTACHMENT_SIZE:
-        return "File too large (max 10 MB)."
+        return "File too large (max 25 MB)."
 
     name = os.path.basename(uploaded.name or "file")
     ext = os.path.splitext(name)[1].lower()
@@ -596,7 +612,7 @@ def _validate_attachment(uploaded) -> str | None:
     if ext == ".svg":
         return "SVG files are not allowed."
 
-    mime = getattr(uploaded, "content_type", "") or ""
+    mime = (getattr(uploaded, "content_type", "") or "").split(";")[0].strip().lower()
     if mime and mime not in ALLOWED_ATTACHMENT_MIME:
         return f"MIME type '{mime}' is not allowed."
 
@@ -613,7 +629,7 @@ def _validate_attachment(uploaded) -> str | None:
 class ConversationAttachmentUploadView(APIView):
     """POST /api/conversations/<id>/attachments/ — upload a file as an
     outbound agent message attachment."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request, conversation_id):
@@ -636,10 +652,31 @@ class ConversationAttachmentUploadView(APIView):
 
         name = os.path.basename(uploaded.name or "file")
         ext = os.path.splitext(name)[1].lower()
-        mime = getattr(uploaded, "content_type", "") or "application/octet-stream"
-        message_type = "image" if mime.startswith("image/") else "file"
+        mime = (getattr(uploaded, "content_type", "") or "application/octet-stream").split(";")[0].strip().lower()
+        if mime.startswith("image/"):
+            message_type = "image"
+        elif mime.startswith("audio/"):
+            message_type = "audio"
+        elif mime.startswith("video/"):
+            message_type = "video"
+        else:
+            message_type = "file"
 
-        content = (request.data.get("content") or "").strip() or name
+        file_bytes = uploaded.read()
+        uploaded.seek(0)
+        # Messenger rejects webm/ogg/opus voice notes — convert to AAC in an .m4a container.
+        if message_type == "audio" and (ext in (".webm", ".ogg", ".oga", ".opus") or mime in ("audio/webm", "audio/ogg", "audio/opus")):
+            converted = _transcode_to_m4a(file_bytes)
+            if converted:
+                file_bytes = converted
+                name = os.path.splitext(name)[0] + ".m4a"
+                ext = ".m4a"
+                mime = "audio/mp4"
+                from django.core.files.uploadedfile import SimpleUploadedFile
+                uploaded = SimpleUploadedFile(name, file_bytes, content_type=mime)
+
+        caption = (request.data.get("content") or "").strip()
+        content = caption or name
         message = Message.objects.create(
             conversation=conv,
             workspace=conv.workspace,
@@ -659,8 +696,23 @@ class ConversationAttachmentUploadView(APIView):
             mime_type=mime,
         )
 
+        # Actually deliver it to the customer (this view used to only store it).
+        if conv.channel != "website" or conv.config.get("bridge") == "iedu":
+            try:
+                result = _send_file_to_channel(conv, file_bytes, name, mime, message_type, caption)
+                message.status = "delivered"
+                if result is not None and getattr(result, "external_message_id", ""):
+                    message.external_id = result.external_message_id
+                message.save(update_fields=["status", "external_id"])
+            except Exception as e:
+                logger.error(f"Failed to send attachment to {conv.channel}: {e}")
+                message.status = "failed"
+                message.ai_metadata["send_error"] = str(e)
+                message.save(update_fields=["status", "ai_metadata"])
+
+        media_label = {"image": "📷 Photo", "audio": "🎤 Voice message", "video": "🎬 Video"}.get(message_type, "📎 " + name)
         conv.last_message_at = timezone.now()
-        conv.last_message_preview = content[:100]
+        conv.last_message_preview = (caption or media_label)[:100]
         conv.status = "open"
         conv.unread_count = 0
         conv.save(update_fields=["last_message_at", "last_message_preview", "status", "unread_count"])
@@ -678,9 +730,79 @@ class ConversationAttachmentUploadView(APIView):
         return Response(MessageSerializer(message).data, status=201)
 
 
+def _transcode_to_m4a(data: bytes):
+    """webm/ogg/opus -> AAC .m4a via ffmpeg. Returns bytes, or None if ffmpeg is unavailable/fails."""
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("ffmpeg"):
+        logger.warning("ffmpeg not installed — cannot convert voice note for Messenger")
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = f"{tmp}/in.bin", f"{tmp}/out.m4a"
+            with open(src, "wb") as f:
+                f.write(data)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", src, "-vn", "-c:a", "aac", "-b:a", "64k", dst],
+                check=True, capture_output=True, timeout=120,
+            )
+            with open(dst, "rb") as f:
+                return f.read()
+    except Exception as e:
+        logger.error(f"Voice transcode failed: {e}")
+        return None
+
+
+def _send_file_to_channel(conversation, file_bytes, filename, mime, message_type, caption=""):
+    """Deliver an uploaded file to the customer. Facebook only for now."""
+    from apps.customers.models import CustomerChannel
+    from apps.integrations.models import Integration
+
+    channel = CustomerChannel.objects.filter(
+        customer=conversation.customer, channel=conversation.channel
+    ).first()
+    if not channel:
+        raise Exception(f"No channel identity found for customer on {conversation.channel}")
+
+    if conversation.channel != "facebook":
+        raise Exception(f"Sending files is not supported on {conversation.channel} yet")
+
+    page_id = conversation.config.get("page_id", "")
+    # Prefer the integration that owns this conversation's Page.
+    integration = None
+    for cand in Integration.objects.filter(
+        workspace=conversation.workspace, integration_type="facebook", is_active=True, status="connected"
+    ).order_by("-created_at"):
+        if any(p.get("page_id") == page_id for p in cand.get_credentials().get("pages", [])):
+            integration = cand
+            break
+    if not integration:
+        raise Exception("No active facebook integration found for this Page")
+
+    from apps.integrations.facebook.client import get_facebook_provider
+    provider = get_facebook_provider(integration)
+    if not hasattr(provider, "send_attachment_file"):
+        raise Exception("Facebook is in mock mode — configure META_APP_ID/META_APP_SECRET")
+    result = provider.send_attachment_file(
+        recipient_id=channel.external_id, file_bytes=file_bytes, filename=filename,
+        mime=mime, message_type=message_type, page_id=page_id,
+    )
+    if not result.success:
+        raise Exception(result.error or "Facebook rejected the attachment")
+    # A caption can't ride along with a Messenger attachment — send it as a follow-up text.
+    if caption:
+        provider.send_message(recipient_id=channel.external_id, content=caption, page_id=page_id)
+    return result
+
+
+_INLINE_TYPES = ("image/", "audio/", "video/")
+
+
 class AttachmentDownloadView(APIView):
     """GET /api/conversations/attachments/<id>/ — authenticated download."""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request, attachment_id):
         from .models import MessageAttachment
@@ -698,16 +820,54 @@ class AttachmentDownloadView(APIView):
 
         import os
         filename = os.path.basename(attachment.file_name or attachment.file.name)
-        return FileResponse(
+        mime = attachment.mime_type or "application/octet-stream"
+        inline = mime.startswith(_INLINE_TYPES) and not mime.startswith("image/svg")
+        if request.query_params.get("download") == "1":
+            inline = False
+
+        total = attachment.file.size
+        range_header = request.headers.get("Range", "")
+        if inline and range_header.startswith("bytes=") and total:
+            # Minimal single-range support so <audio>/<video> can seek.
+            try:
+                start_s, _, end_s = range_header[6:].split(",")[0].partition("-")
+                start = int(start_s) if start_s else max(total - int(end_s), 0)
+                end = int(end_s) if (end_s and start_s) else total - 1
+                end = min(end, total - 1)
+                if start > end:
+                    raise ValueError
+                from django.http import HttpResponse
+                f = attachment.file.open("rb")
+                try:
+                    f.seek(start)
+                    chunk = f.read(end - start + 1)
+                finally:
+                    f.close()
+                resp = HttpResponse(chunk, status=206, content_type=mime)
+                resp["Content-Range"] = f"bytes {start}-{end}/{total}"
+                resp["Accept-Ranges"] = "bytes"
+                resp["Content-Length"] = str(len(chunk))
+                resp["X-Content-Type-Options"] = "nosniff"
+                return resp
+            except ValueError:
+                from django.http import HttpResponse
+                resp = HttpResponse(status=416)
+                resp["Content-Range"] = f"bytes */{total}"
+                return resp
+
+        resp = FileResponse(
             attachment.file.open("rb"),
-            content_type=attachment.mime_type or "application/octet-stream",
-            as_attachment=True,
+            content_type=mime,
+            as_attachment=not inline,
             filename=filename,
         )
+        resp["Accept-Ranges"] = "bytes"
+        resp["X-Content-Type-Options"] = "nosniff"
+        return resp
 
 
 class AISuggestView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         conv = get_conversation_for_user(request.user, conversation_id)
@@ -719,7 +879,7 @@ class AISuggestView(APIView):
 
 
 class ConversationLabelsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def _iedu_labels(self, request, conversation_id):
         """Return (client, pk, current_label_entries) for an iedu conv."""
@@ -795,9 +955,10 @@ class ConversationLabelsView(APIView):
 
 
 class LabelListCreateView(generics.ListCreateAPIView):
+    min_write_role = "manager"
     queryset = Label.objects.none()
     serializer_class = LabelSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -815,8 +976,9 @@ class LabelListCreateView(generics.ListCreateAPIView):
 
 
 class LabelDetailView(generics.RetrieveUpdateDestroyAPIView):
+    min_write_role = "manager"
     serializer_class = LabelSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -826,7 +988,7 @@ class LabelDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class TypingIndicatorView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def post(self, request, conversation_id):
         conv = get_conversation_for_user(request.user, conversation_id)
@@ -841,7 +1003,7 @@ class FacebookPagesView(APIView):
     """List all connected Facebook Pages across all Facebook integrations.
     Used by the inbox to build a page filter dropdown."""
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get(self, request):
         ws_ids = get_user_workspaces(request.user)

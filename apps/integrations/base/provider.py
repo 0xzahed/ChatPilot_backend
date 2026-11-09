@@ -18,11 +18,12 @@ class IncomingMessage:
     sender_external_id: str
     sender_name: str
     content: str
-    message_type: str = "text"  # text, image, file, audio
+    message_type: str = "text"  # text, image, file, audio, video
     attachment_url: str = ""
     timestamp: str = ""
     page_id: str = ""  # For multi-page integrations (e.g. Facebook)
     sender_pic: str = ""  # Profile picture URL
+    attachments: list = field(default_factory=list)  # [{"type","url","name"}] all media in the message
     raw_payload: dict = field(default_factory=dict)
 
 

@@ -10,10 +10,21 @@ class WorkspaceSettingsSerializer(serializers.ModelSerializer):
 
 
 class WorkspaceSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+
     class Meta:
         model = Workspace
-        fields = ["id", "name", "slug", "logo", "is_active", "created_at", "updated_at"]
-        read_only_fields = ["id", "is_active", "created_at", "updated_at"]
+        fields = ["id", "name", "slug", "logo", "is_active", "role", "created_at", "updated_at"]
+        read_only_fields = ["id", "is_active", "role", "created_at", "updated_at"]
+
+    def get_role(self, obj):
+        """The requesting user's role in this workspace (None if not a member)."""
+        request = self.context.get("request")
+        if not request or not request.user.is_authenticated:
+            return None
+        return (
+            obj.memberships.filter(user=request.user).values_list("role", flat=True).first()
+        )
 
     def validate_logo(self, value):
         from common.utils import validate_image_upload

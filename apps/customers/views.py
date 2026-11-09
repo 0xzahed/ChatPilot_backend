@@ -1,5 +1,6 @@
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
+from common.permissions import WorkspaceRolePermission, resolve_create_workspace_id
 from django.db.models import Q, Count
 from .models import Customer, CustomerTimelineEvent
 from .serializers import CustomerSerializer, CustomerListSerializer, CustomerTimelineSerializer
@@ -10,7 +11,7 @@ from apps.customers.models import CustomerTimelineEvent
 
 class CustomerListView(generics.ListCreateAPIView):
     queryset = Customer.objects.none()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_serializer_class(self):
         if self.request.method == "GET":
@@ -36,16 +37,12 @@ class CustomerListView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        ws_id = self.request.data.get("workspace_id")
-        ws_ids = get_user_workspaces(self.request.user)
-        if str(ws_id) not in ws_ids:
-            ws_id = ws_ids[0] if ws_ids else None
-        serializer.save(workspace_id=ws_id)
+        serializer.save(workspace_id=resolve_create_workspace_id(self.request))
 
 
 class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CustomerSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
@@ -57,7 +54,7 @@ class CustomerDetailView(generics.RetrieveUpdateDestroyAPIView):
 class CustomerTimelineView(generics.ListAPIView):
     queryset = CustomerTimelineEvent.objects.none()
     serializer_class = CustomerTimelineSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WorkspaceRolePermission]
 
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
